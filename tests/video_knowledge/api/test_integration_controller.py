@@ -9,6 +9,7 @@ from plugins.video_knowledge.backend.app.integration.controller import (
 from plugins.video_knowledge.backend.app.integration.runtime import (
     ManagedVideoKnowledgeRuntime,
 )
+from plugins.video_knowledge.backend.app.schemas.system import RuntimeStatusResponse
 from plugins.video_knowledge.backend.app.services.media_service import MediaService
 from plugins.video_knowledge.backend.media_adapters.models import (
     DownloadResult,
@@ -59,6 +60,14 @@ async def test_controller_runs_without_a_separate_http_service(
         fake_live_status,
     )
 
+    async def fake_runtime_status(_service) -> RuntimeStatusResponse:
+        return RuntimeStatusResponse(ready=True, tools=[])
+
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.app.integration.controller.RuntimeReadinessService.status",
+        fake_runtime_status,
+    )
+
     health = await controller.dispatch("GET", "/system/health")
     ingest = await controller.dispatch(
         "POST",
@@ -94,6 +103,7 @@ async def test_controller_runs_without_a_separate_http_service(
         payload={"url": "https://live.bilibili.com/456"},
     )
     asr = await controller.dispatch("GET", "/system/asr")
+    runtime_status = await controller.dispatch("GET", "/system/runtime")
     events = await controller.dispatch(
         "GET", f"/jobs/{ingest.body['job']['id']}/events"
     )
@@ -131,6 +141,7 @@ async def test_controller_runs_without_a_separate_http_service(
     assert live_probe.body["title"] == "测试直播间"
     assert live_probe.body["is_live"] is False
     assert asr.body["model"] == "small"
+    assert runtime_status.body == {"ready": True, "tools": []}
     assert events.body[0]["data"]["message"] == "任务已创建"
     assert playback.body["mime_type"] == "video/mp4"
     assert await asyncio.to_thread(Path(playback.body["path"]).read_bytes) == b"video"

@@ -6,6 +6,18 @@ export interface Health {
   components: Record<string, { detail?: null | string; status: string }>
 }
 
+export interface RuntimeStatus {
+  ready: boolean
+  tools: RuntimeToolStatus[]
+}
+
+export interface RuntimeToolStatus {
+  name: string
+  available: boolean
+  version?: null | string
+  detail?: null | string
+}
+
 export interface AsrStatus {
   enabled: boolean
   model: string

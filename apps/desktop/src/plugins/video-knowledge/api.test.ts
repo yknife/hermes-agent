@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { bindApi, ingest, mediaPlaybackUrl, mediaThumbnailUrl, probeSource } from './api'
+import { bindApi, fetchRuntimeStatus, ingest, mediaPlaybackUrl, mediaThumbnailUrl, probeSource } from './api'
 import type { IngestOptions } from './types'
 
 const dispose: Array<() => void> = []
@@ -68,5 +68,14 @@ describe('video knowledge plugin API', () => {
     expect(mediaThumbnailUrl('https://example.test/thumbnail.jpg')).toBe(
       'https://example.test/thumbnail.jpg'
     )
+  })
+
+  it('loads release runtime readiness from the plugin namespace', async () => {
+    const rest = vi.fn().mockResolvedValue({ ready: true, tools: [] })
+
+    dispose.push(bindApi(rest))
+    await fetchRuntimeStatus()
+
+    expect(rest).toHaveBeenCalledWith('/system/runtime', undefined)
   })
 })

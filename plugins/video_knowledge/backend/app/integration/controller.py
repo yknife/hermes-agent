@@ -56,6 +56,9 @@ from plugins.video_knowledge.backend.app.services.media_service import (
     classify_source_type,
     normalize_url,
 )
+from plugins.video_knowledge.backend.app.services.runtime_service import (
+    RuntimeReadinessService,
+)
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
 )
@@ -99,6 +102,10 @@ class VideoKnowledgeController:
         if method == "GET" and parts == ["system", "asr"]:
             return self._json(
                 await ASRSettingsService(database, self.runtime.settings).status()
+            )
+        if method == "GET" and parts == ["system", "runtime"]:
+            return self._json(
+                await RuntimeReadinessService(self.runtime.settings).status()
             )
         if method == "PUT" and parts == ["system", "asr"]:
             service = ASRSettingsService(database, self.runtime.settings)

@@ -63,3 +63,15 @@ class ASRStatusResponse(BaseModel):
     overlap_seconds: float
     auto_analyze: bool
     models: list[ASRModelStatus]
+
+
+class RuntimeToolStatus(BaseModel):
+    name: str
+    available: bool
+    version: str | None = None
+    detail: str | None = None
+
+
+class RuntimeStatusResponse(BaseModel):
+    ready: bool
+    tools: list[RuntimeToolStatus]

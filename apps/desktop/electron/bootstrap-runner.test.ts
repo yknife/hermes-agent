@@ -15,6 +15,7 @@ import {
   isPinnedCommit,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
+  repositoryForStamp,
   runBootstrap
 } from './bootstrap-runner'
 
@@ -93,6 +94,25 @@ test('fresh bootstrap args include the packaged commit pin', () => {
     }),
     ['--dir', '/tmp/hermes-agent', '--hermes-home', '/tmp/hermes', '--branch', 'main', '--commit', installStamp.commit]
   )
+})
+
+test('fork-aware bootstrap pins and validates the source repository', () => {
+  const installStamp = {
+    commit: 'a'.repeat(40),
+    branch: 'vkc-integration',
+    repository: 'yknife/hermes-agent'
+  }
+
+  assert.deepEqual(buildPinArgs(installStamp), [
+    '-Commit',
+    installStamp.commit,
+    '-Branch',
+    'vkc-integration',
+    '-Repository',
+    'yknife/hermes-agent'
+  ])
+  assert.equal(repositoryForStamp(installStamp), 'yknife/hermes-agent')
+  assert.equal(repositoryForStamp({ repository: '../hostile' }), 'NousResearch/hermes-agent')
 })
 
 test('existing-checkout bootstrap args keep branch but skip the packaged commit pin', () => {
@@ -183,6 +203,31 @@ test('resolveInstallScript downloads fallback stamps by branch instead of zero c
       logs.some(ev => /fallback, unpinned/.test(ev.line || '')),
       'emits an unpinned fallback log line'
     )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript downloads a fork installer into a repository-scoped cache', async () => {
+  const home = mkTmpHome()
+
+  try {
+    const commit = 'e'.repeat(40)
+    const calls = []
+    const result = await resolveInstallScript({
+      installStamp: { commit, branch: 'vkc-integration', repository: 'yknife/hermes-agent' },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      _download: async (ref, destPath, repository) => {
+        calls.push({ ref, repository })
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        fs.writeFileSync(destPath, '# installer')
+      }
+    })
+
+    assert.deepEqual(calls, [{ ref: commit, repository: 'yknife/hermes-agent' }])
+    assert.equal(result.path, cachedScriptPath(home, `yknife-hermes-agent-${commit}`))
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

@@ -45,6 +45,17 @@ const IS_WINDOWS = process.platform === 'win32'
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 const FALLBACK_COMMIT_RE = /^0{7,40}$/
 const FALLBACK_BRANCH = 'main'
+const DEFAULT_BOOTSTRAP_REPOSITORY = 'NousResearch/hermes-agent'
+const GITHUB_REPOSITORY_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+
+function repositoryForStamp(installStamp) {
+  const repository = installStamp && typeof installStamp.repository === 'string' ? installStamp.repository.trim() : ''
+  const segments = repository.split('/')
+
+  return GITHUB_REPOSITORY_RE.test(repository) && segments.every(segment => segment !== '.' && segment !== '..')
+    ? repository
+    : DEFAULT_BOOTSTRAP_REPOSITORY
+}
 
 function isPinnedCommit(commit) {
   return typeof commit === 'string' && STAMP_COMMIT_RE.test(commit) && !FALLBACK_COMMIT_RE.test(commit)
@@ -227,13 +238,17 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(ref, destPath) {
+function downloadInstallScript(ref, destPath, repository = DEFAULT_BOOTSTRAP_REPOSITORY) {
   // Fetch from GitHub raw at the install ref. Normal production builds pass a
   // pinned SHA (immutable). Non-git fallback builds pass an unpinned branch
   // ref so local builds can still bootstrap without pretending the all-zero
   // placeholder is a real GitHub commit.
   const scriptName = installScriptName()
-  const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
+  if (repositoryForStamp({ repository }) !== repository) {
+    return Promise.reject(new Error(`Invalid bootstrap repository: ${repository}`))
+  }
+
+  const url = `https://raw.githubusercontent.com/${repository}/${ref}/scripts/${scriptName}`
 
   return new Promise((resolve, reject) => {
     fs.mkdirSync(path.dirname(destPath), { recursive: true })
@@ -344,7 +359,10 @@ async function resolveInstallScript({
     )
   }
 
-  const cached = cachedScriptPath(hermesHome, installRef.cacheKey)
+  const repository = repositoryForStamp(installStamp)
+  const repositoryCachePrefix =
+    repository === DEFAULT_BOOTSTRAP_REPOSITORY ? '' : `${repository.replace('/', '-')}-`
+  const cached = cachedScriptPath(hermesHome, `${repositoryCachePrefix}${installRef.cacheKey}`)
   const resolvedCommit = installRef.pinned ? installRef.ref : null
 
   try {
@@ -367,7 +385,7 @@ async function resolveInstallScript({
   })
 
   try {
-    await _download(installRef.ref, cached)
+    await _download(installRef.ref, cached, repository)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
 
     return { path: cached, source: 'download', commit: resolvedCommit, kind: installScriptKind() }
@@ -671,6 +689,10 @@ function buildPinArgs(installStamp, { pinCommit = true } = {}) {
 
   if (installStamp && installStamp.branch) {
     args.push('-Branch', installStamp.branch)
+  }
+
+  if (installStamp && installStamp.repository) {
+    args.push('-Repository', repositoryForStamp(installStamp))
   }
 
   return args
@@ -1033,5 +1055,6 @@ export {
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
+  repositoryForStamp,
   runBootstrap
 }

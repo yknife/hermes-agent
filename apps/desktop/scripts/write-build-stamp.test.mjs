@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  DEFAULT_REPOSITORY,
   FALLBACK_BRANCH,
   FALLBACK_COMMIT,
   fromCI,
@@ -14,7 +15,13 @@ import {
 test('fromCI reads GITHUB_SHA / GITHUB_REF_NAME', () => {
   assert.deepEqual(
     fromCI({ GITHUB_SHA: 'a'.repeat(40), GITHUB_REF_NAME: 'release' }),
-    { commit: 'a'.repeat(40), branch: 'release', dirty: false, source: 'ci' }
+    {
+      commit: 'a'.repeat(40),
+      branch: 'release',
+      repository: DEFAULT_REPOSITORY,
+      dirty: false,
+      source: 'ci'
+    }
   )
   assert.equal(fromCI({}), null)
 })
@@ -31,11 +38,13 @@ test('fromLocalGit reads HEAD + branch + dirty status', () => {
     if (cmd === 'git rev-parse HEAD') return 'b'.repeat(40)
     if (cmd === 'git rev-parse --abbrev-ref HEAD') return 'main'
     if (cmd === 'git status --porcelain -uno') return ' M apps/desktop/package.json'
+    if (cmd === 'git remote get-url origin') return 'https://github.com/yknife/hermes-agent.git'
     return null
   }
   assert.deepEqual(fromLocalGit('/repo', execFn), {
     commit: 'b'.repeat(40),
     branch: 'main',
+    repository: 'yknife/hermes-agent',
     dirty: true,
     source: 'local'
   })
@@ -46,6 +55,7 @@ test('fromFallback uses the all-zero placeholder commit', () => {
   assert.deepEqual(fromFallback(), {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
+    repository: DEFAULT_REPOSITORY,
     dirty: false,
     source: 'fallback'
   })
@@ -75,11 +85,31 @@ test('resolveStamp prefers CI over local git over fallback', () => {
   assert.equal(local.dirty, false)
 })
 
+test('explicit release metadata wins over outer GitHub workflow metadata', () => {
+  const stamp = fromCI({
+    GITHUB_SHA: 'a'.repeat(40),
+    GITHUB_REF_NAME: 'main',
+    GITHUB_REPOSITORY: 'yknife/video-knowledge-collector',
+    HERMES_DESKTOP_BOOTSTRAP_COMMIT: 'b'.repeat(40),
+    HERMES_DESKTOP_BOOTSTRAP_BRANCH: 'vkc-integration',
+    HERMES_DESKTOP_BOOTSTRAP_REPOSITORY: 'yknife/hermes-agent'
+  })
+
+  assert.deepEqual(stamp, {
+    commit: 'b'.repeat(40),
+    branch: 'vkc-integration',
+    repository: 'yknife/hermes-agent',
+    dirty: false,
+    source: 'release'
+  })
+})
+
 test('resolveStamp falls back when neither CI nor git is available', () => {
   const stamp = resolveStamp({ env: {}, execFn: () => null })
   assert.deepEqual(stamp, {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
+    repository: DEFAULT_REPOSITORY,
     dirty: false,
     source: 'fallback'
   })

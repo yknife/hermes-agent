@@ -16,6 +16,7 @@ from plugins.video_knowledge.backend.media_adapters.tools import (
     FFmpegAdapter,
     FFprobeAdapter,
     LineHandler,
+    MediaToolInspector,
     StreamGetAdapter,
     YtDlpAdapter,
 )
@@ -55,6 +56,31 @@ class FakeFFmpegRunner(FakeRunner):
         if on_stdout is not None:
             await on_stdout("out_time_ms=500000")
         return self.result
+
+
+@pytest.mark.asyncio
+async def test_runtime_tool_inspector_reports_packages_and_media_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.media_adapters.tools.importlib.metadata.version",
+        lambda distribution: {"yt-dlp": "1", "streamget": "2", "faster-whisper": "3"}[
+            distribution
+        ],
+    )
+    tools = await MediaToolInspector(
+        FakeRunner((0, "ffmpeg version 7.1.1 Copyright", ""))
+    ).inspect()
+
+    assert {item.name for item in tools} == {
+        "yt-dlp",
+        "streamget",
+        "faster-whisper",
+        "ffmpeg",
+        "ffprobe",
+    }
+    assert all(item.available for item in tools)
+    assert next(item for item in tools if item.name == "ffmpeg").version == "7.1.1"
 
 
 @pytest.mark.asyncio

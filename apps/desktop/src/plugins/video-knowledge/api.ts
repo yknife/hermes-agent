@@ -17,6 +17,7 @@ import type {
   Media,
   PlaybackInfo,
   Probe,
+  RuntimeStatus,
   Transcript,
   TranscriptSearchResult
 } from './types'
@@ -49,6 +50,7 @@ function call<T>(path: string, options?: PluginRestOptions): Promise<T> {
 }
 
 export const fetchHealth = () => call<Health>('/system/health')
+export const fetchRuntimeStatus = () => call<RuntimeStatus>('/system/runtime')
 export const fetchAsrStatus = () => call<AsrStatus>('/system/asr')
 export const updateAsrSettings = (value: AsrSettingsUpdate) =>
   call<AsrStatus>('/system/asr', { method: 'PUT', body: value })

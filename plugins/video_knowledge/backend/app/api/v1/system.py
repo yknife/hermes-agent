@@ -12,8 +12,12 @@ from plugins.video_knowledge.backend.app.schemas.system import (
     ASRStatusResponse,
     ComponentHealth,
     HealthResponse,
+    RuntimeStatusResponse,
 )
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.runtime_service import (
+    RuntimeReadinessService,
+)
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -57,6 +61,13 @@ async def asr_status(
     database: Annotated[Database, Depends(get_database)],
 ) -> ASRStatusResponse:
     return await ASRSettingsService(database, request.app.state.settings).status()
+
+
+@router.get("/runtime", response_model=RuntimeStatusResponse)
+async def runtime_status(
+    settings: Annotated[Settings, Depends(get_settings)],
+) -> RuntimeStatusResponse:
+    return await RuntimeReadinessService(settings).status()
 
 
 @router.put("/asr", response_model=ASRStatusResponse)

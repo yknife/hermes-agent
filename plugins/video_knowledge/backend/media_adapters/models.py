@@ -102,3 +102,11 @@ class RecordingProgress:
 class LiveRecordingResult:
     path: Path
     interrupted: bool
+
+
+@dataclass(frozen=True)
+class RuntimeToolInfo:
+    name: str
+    available: bool
+    version: str | None = None
+    detail: str | None = None

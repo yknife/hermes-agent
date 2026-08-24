@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import importlib.metadata
 import json
 import mimetypes
 import os
@@ -31,6 +32,7 @@ from plugins.video_knowledge.backend.media_adapters.models import (
     MediaFileInfo,
     MediaProbe,
     RecordingProgress,
+    RuntimeToolInfo,
     SubtitleDownloadResult,
     SubtitleTrack,
 )
@@ -174,6 +176,63 @@ class AsyncCommandRunner:
             check=False,
             timeout=5,
         )
+
+
+class MediaToolInspector:
+    """Report release-critical media dependency versions without leaking paths."""
+
+    def __init__(
+        self,
+        runner: CommandRunner | None = None,
+        *,
+        ffmpeg_command: str = "ffmpeg",
+        ffprobe_command: str = "ffprobe",
+    ) -> None:
+        self.runner = runner or AsyncCommandRunner()
+        self.ffmpeg_command = ffmpeg_command
+        self.ffprobe_command = ffprobe_command
+
+    async def inspect(self) -> list[RuntimeToolInfo]:
+        packages = [
+            self._package("yt-dlp", "yt-dlp"),
+            self._package("streamget", "streamget"),
+            self._package("faster-whisper", "faster-whisper"),
+        ]
+        commands = await asyncio.gather(
+            self._command("ffmpeg", (self.ffmpeg_command, "-version")),
+            self._command("ffprobe", (self.ffprobe_command, "-version")),
+        )
+        return [*packages, *commands]
+
+    @staticmethod
+    def _package(name: str, distribution: str) -> RuntimeToolInfo:
+        try:
+            version = importlib.metadata.version(distribution)
+        except importlib.metadata.PackageNotFoundError:
+            return RuntimeToolInfo(name=name, available=False, detail="not installed")
+        return RuntimeToolInfo(name=name, available=True, version=version)
+
+    async def _command(self, name: str, args: Sequence[str]) -> RuntimeToolInfo:
+        try:
+            code, stdout, stderr = await asyncio.wait_for(
+                self.runner.run(args), timeout=5
+            )
+        except FileNotFoundError:
+            return RuntimeToolInfo(name=name, available=False, detail="not found")
+        except TimeoutError:
+            return RuntimeToolInfo(
+                name=name, available=False, detail="version check timed out"
+            )
+        except OSError as exc:
+            return RuntimeToolInfo(
+                name=name, available=False, detail=type(exc).__name__
+            )
+        output = stdout or stderr
+        first_line = output.splitlines()[0].strip() if output else ""
+        if code != 0:
+            return RuntimeToolInfo(name=name, available=False, detail=f"exit {code}")
+        version = first_line.removeprefix(f"{name} version ").split(" ", 1)[0]
+        return RuntimeToolInfo(name=name, available=True, version=version or None)
 
 
 def _raise_for_failure(stderr: str) -> None:

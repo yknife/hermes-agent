@@ -8,12 +8,14 @@ from plugins.video_knowledge.backend.media_adapters.models import (
     MediaFileInfo,
     MediaProbe,
     RecordingProgress,
+    RuntimeToolInfo,
     SubtitleDownloadResult,
     SubtitleTrack,
 )
 from plugins.video_knowledge.backend.media_adapters.tools import (
     FFmpegAdapter,
     FFprobeAdapter,
+    MediaToolInspector,
     StreamGetAdapter,
     YtDlpAdapter,
 )
@@ -28,8 +30,10 @@ __all__ = [
     "MediaFileInfo",
     "FFprobeAdapter",
     "FFmpegAdapter",
+    "MediaToolInspector",
     "MediaProbe",
     "RecordingProgress",
+    "RuntimeToolInfo",
     "StreamGetAdapter",
     "SubtitleDownloadResult",
     "SubtitleTrack",

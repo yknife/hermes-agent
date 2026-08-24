@@ -32,7 +32,8 @@ import { execSync } from "child_process"
 
 import { isMain } from "./utils.mjs"
 
-const STAMP_SCHEMA_VERSION = 1
+const STAMP_SCHEMA_VERSION = 2
+export const DEFAULT_REPOSITORY = "NousResearch/hermes-agent"
 
 /** All-zero placeholder used when no real commit can be resolved. */
 export const FALLBACK_COMMIT = "0000000000000000000000000000000000000000"
@@ -51,15 +52,30 @@ function tryExec(cmd, opts) {
   }
 }
 
+function normalizeRepository(value) {
+  const text = String(value || "").trim().replace(/\.git$/i, "")
+  const match = text.match(/(?:github\.com[/:])?([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/i)
+  return match ? match[1] : null
+}
+
+function repositoryFromGit(repoRoot, execFn) {
+  return normalizeRepository(execFn("git remote get-url origin", { cwd: repoRoot })) || DEFAULT_REPOSITORY
+}
+
 export function fromCI(env = process.env) {
-  const sha = env.GITHUB_SHA
+  const sha = env.HERMES_DESKTOP_BOOTSTRAP_COMMIT || env.GITHUB_SHA
   if (!sha) return null
-  const branch = env.GITHUB_REF_NAME || env.GITHUB_HEAD_REF || null
+  const branch =
+    env.HERMES_DESKTOP_BOOTSTRAP_BRANCH || env.GITHUB_REF_NAME || env.GITHUB_HEAD_REF || null
+  const repository =
+    normalizeRepository(env.HERMES_DESKTOP_BOOTSTRAP_REPOSITORY || env.GITHUB_REPOSITORY) ||
+    DEFAULT_REPOSITORY
   return {
     commit: sha,
     branch: branch,
+    repository,
     dirty: false, // CI builds from a checkout-of-ref by definition
-    source: "ci"
+    source: env.HERMES_DESKTOP_BOOTSTRAP_COMMIT ? "release" : "ci"
   }
 }
 
@@ -78,6 +94,7 @@ export function fromLocalGit(repoRoot = REPO_ROOT, execFn = tryExec) {
   return {
     commit: sha,
     branch: branch === "HEAD" ? null : branch, // detached HEAD -> null
+    repository: repositoryFromGit(repoRoot, execFn),
     dirty: dirty,
     source: "local"
   }
@@ -92,6 +109,7 @@ export function fromFallback(branch = FALLBACK_BRANCH) {
   return {
     commit: FALLBACK_COMMIT,
     branch: branch || FALLBACK_BRANCH,
+    repository: DEFAULT_REPOSITORY,
     dirty: false,
     source: "fallback"
   }
@@ -153,6 +171,7 @@ function main() {
     schemaVersion: STAMP_SCHEMA_VERSION,
     commit: stamp.commit,
     branch: stamp.branch,
+    repository: stamp.repository || DEFAULT_REPOSITORY,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
     source: stamp.source

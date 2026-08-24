@@ -4,11 +4,12 @@ import {
 } from '@hermes/plugin-sdk'
 import { useState } from 'react'
 
-import { downloadAsrModel, fetchAsrStatus, updateAsrSettings } from './api'
+import { downloadAsrModel, fetchAsrStatus, fetchRuntimeStatus, updateAsrSettings } from './api'
 import { errorMessage } from './format'
 import type { AsrSettingsUpdate, AsrStatus } from './types'
 
 const STATUS_KEY = ['video-knowledge', 'system', 'asr'] as const
+const RUNTIME_KEY = ['video-knowledge', 'system', 'runtime'] as const
 
 export function AsrSettingsView() {
   const status = useQuery({
@@ -72,6 +73,8 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
           <p className="mt-1 text-xs text-muted-foreground">这里保存的是新任务默认值；“添加内容”仍可针对单个视频或直播覆盖这些配置。</p>
         </header>
 
+        <RuntimeReadiness />
+
         <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
           <div className="flex items-center justify-between gap-4">
             <div><h3 className="text-sm font-semibold">默认配置</h3><p className="mt-1 text-xs text-muted-foreground">保存后，之后创建的任务会自动使用这些值。</p></div>
@@ -127,6 +130,45 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
         </section>
       </div>
     </div>
+  )
+}
+
+function RuntimeReadiness() {
+  const runtime = useQuery({
+    queryFn: fetchRuntimeStatus,
+    queryKey: RUNTIME_KEY,
+    refetchOnMount: 'always',
+    staleTime: 60_000
+  })
+
+  return (
+    <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">运行环境检查</h3>
+          <p className="mt-1 text-xs text-muted-foreground">安装包、媒体工具和转写运行时必须全部就绪。</p>
+        </div>
+        <Badge variant={runtime.data?.ready ? 'default' : 'outline'}>
+          {runtime.isLoading ? '检查中' : runtime.data?.ready ? '全部就绪' : '需要处理'}
+        </Badge>
+      </div>
+      {runtime.isError && <div className="mt-3 text-xs text-destructive">{errorMessage(runtime.error, '运行环境检查失败')}</div>}
+      {runtime.data && (
+        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {runtime.data.tools.map(tool => (
+            <div className="rounded-md border border-(--ui-stroke-secondary) bg-background/40 p-3" key={tool.name}>
+              <div className="flex items-center justify-between gap-2">
+                <strong className="text-xs">{tool.name}</strong>
+                <Badge variant={tool.available ? 'default' : 'outline'}>{tool.available ? '可用' : '缺失'}</Badge>
+              </div>
+              <div className="mt-2 truncate text-[0.6875rem] text-muted-foreground">
+                {tool.version ?? tool.detail ?? '版本未知'}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   )
 }
 
