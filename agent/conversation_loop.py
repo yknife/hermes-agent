@@ -3768,7 +3768,15 @@ def run_conversation(
                                 if assistant_message.content:
                                     truncated_response_parts.append(assistant_message.content)
 
-                            if length_continue_retries < 4:
+                            _length_continuation_disabled = bool(
+                                getattr(
+                                    agent, "_disable_length_continuation", False
+                                )
+                            )
+                            if (
+                                length_continue_retries < 4
+                                and not _length_continuation_disabled
+                            ):
                                 _is_partial_stream_stub = (
                                     getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
                                 )
@@ -3811,9 +3819,14 @@ def run_conversation(
 
                             partial_response = agent._strip_think_blocks(_join_truncated_parts(truncated_response_parts)).strip()
                             if partial_response:
+                                _truncation_detail = (
+                                    "with continuation disabled"
+                                    if _length_continuation_disabled
+                                    else "after 4 continuation attempts"
+                                )
                                 agent._vprint(
                                     f"{agent.log_prefix}⚠️  Response still truncated "
-                                    f"after 4 continuation attempts — keeping the "
+                                    f"{_truncation_detail} — keeping the "
                                     f"partial response received so far.",
                                     force=True,
                                 )
@@ -3849,7 +3862,11 @@ def run_conversation(
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "partial": True,
-                                "error": "Response remained truncated after 4 continuation attempts",
+                                "error": (
+                                    "Structured response reached its output limit"
+                                    if _length_continuation_disabled
+                                    else "Response remained truncated after 4 continuation attempts"
+                                ),
                             }
 
                     if agent.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:

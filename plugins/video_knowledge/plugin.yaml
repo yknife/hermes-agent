@@ -1,0 +1,9 @@
+name: video_knowledge
+version: 0.7.0
+description: "Profile-scoped, read-only Video Knowledge tools for the Hermes Chat Workspace."
+author: Video Knowledge Collector
+kind: backend
+provides_tools:
+  - search_videos
+  - search_transcript
+  - get_segments

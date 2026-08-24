@@ -113,6 +113,21 @@ dependencies = [
   "pathspec==1.1.1",
   "fastapi>=0.104.0,<1",
   "uvicorn[standard]>=0.24.0,<1",
+  # Bundled Video Knowledge plugin. These are core because its backend and
+  # supervised worker are available in every Desktop/Gateway installation.
+  "aiohttp==3.14.3",
+  "aiosqlite==0.22.1",
+  "alembic==1.19.1",
+  "SQLAlchemy[asyncio]==2.0.52",
+  "pydantic-settings==2.15.0",
+  "yt-dlp==2026.7.4",
+  "streamget==4.0.9",
+  "faster-whisper==1.2.1",
+  # faster-whisper/ctranslate2 wheels do not declare NVIDIA's Windows CUDA
+  # runtime. Keep the required CUDA 12 user-mode DLLs in the project venv so
+  # the supervised Video Knowledge worker does not depend on a system toolkit.
+  "nvidia-cublas-cu12==12.9.2.10; sys_platform == 'win32'",
+  "nvidia-cudnn-cu12==9.24.0.43; sys_platform == 'win32'",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
@@ -414,7 +429,7 @@ exclude-newer = "14 days"
 # cutoff can still brick installs. Exempting exact pins is pure brick-risk
 # removal at no supply-chain cost. Guarded by
 # tests/test_packaging_metadata.py::test_build_system_requires_exempt_from_exclude_newer.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, aiosqlite = false, alembic = false, sqlalchemy = false, pydantic-settings = false, yt-dlp = false, faster-whisper = false, cryptography = false, defusedxml = false, python-olm = false, unpaddedbase64 = false, setuptools = false, pillow = false, mcp = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
@@ -455,7 +470,22 @@ gateway = ["assets/**/*"]
 # Bundled plugin discovery reads these manifests at runtime. Keep them in
 # sealed wheels with the plugin Python modules; without this declaration the
 # wheel contains adapters but discovery finds zero bundled plugins.
-plugins = ["**/plugin.yaml", "**/plugin.yml"]
+plugins = [
+  "**/plugin.yaml",
+  "**/plugin.yml",
+  "video_knowledge/dashboard/manifest.json",
+  "video_knowledge/dashboard/plugin_api.py",
+  "video_knowledge/dashboard/dist/*.js",
+  "video_knowledge/backend/alembic.ini",
+  "video_knowledge/backend/config/*.json",
+  "video_knowledge/backend/config/*.toml",
+  "video_knowledge/backend/.env.example",
+  "video_knowledge/backend/prompts/*.md",
+  "video_knowledge/backend/migrations/*.py",
+  "video_knowledge/backend/migrations/*.mako",
+  "video_knowledge/backend/migrations/README",
+  "video_knowledge/backend/migrations/versions/*.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

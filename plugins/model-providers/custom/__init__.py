@@ -63,6 +63,20 @@ class CustomProfile(ProviderProfile):
                 # ignore them.
                 top_level["reasoning_effort"] = "none"
                 extra_body["think"] = False
+                # llama.cpp's OpenAI-compatible endpoint does not use the
+                # Ollama ``think`` flag (and currently ignores
+                # ``reasoning_effort=none`` for Qwen3.5). Its bundled Qwen
+                # Jinja template reads ``enable_thinking`` instead. Limit the
+                # extra switch to local Qwen endpoints so unrelated custom
+                # OpenAI-compatible providers never receive an unknown field.
+                _base_url = str(ctx.get("base_url") or self.base_url or "").lower()
+                _model = str(ctx.get("model") or "").lower()
+                if "qwen" in _model and (
+                    "127.0.0.1" in _base_url or "localhost" in _base_url
+                ):
+                    extra_body["chat_template_kwargs"] = {
+                        "enable_thinking": False,
+                    }
             elif _effort:
                 top_level["reasoning_effort"] = _effort
 

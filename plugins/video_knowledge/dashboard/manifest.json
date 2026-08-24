@@ -1,0 +1,12 @@
+{
+  "name": "video-knowledge",
+  "label": "Video Knowledge",
+  "description": "Collect videos and turn transcripts into cited knowledge with Hermes",
+  "icon": "Video",
+  "version": "1.0.0",
+  "tab": {
+    "hidden": true
+  },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "disable_existing_loggers": false,
+  "formatters": {
+    "json": { "()": "plugins.video_knowledge.backend.app.core.logging.JsonFormatter" }
+  },
+  "handlers": {
+    "console": { "class": "logging.StreamHandler", "formatter": "json", "stream": "ext://sys.stdout" }
+  },
+  "root": { "level": "INFO", "handlers": ["console"] }
+}

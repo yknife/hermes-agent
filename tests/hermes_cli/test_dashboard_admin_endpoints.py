@@ -32,7 +32,6 @@ class TestMcpEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
 
-
     def test_stdio_env_is_redacted_on_read(self):
         self.client.post(
             "/api/mcp/servers",
@@ -46,9 +45,7 @@ class TestMcpEndpoints:
         srv = self.client.get("/api/mcp/servers").json()["servers"][0]
         assert srv["env"]["API_KEY"] != "sk-secret-1234567890"
 
-    def test_http_bearer_auth_separates_secret_from_config(
-        self, _isolate_hermes_home
-    ):
+    def test_http_bearer_auth_separates_secret_from_config(self, _isolate_hermes_home):
         from hermes_constants import get_hermes_home
 
         secret = "dashboard-secret-value"
@@ -139,15 +136,10 @@ class TestMcpEndpoints:
         assert error in response.json()["detail"]
 
 
-
-
-
 class TestCredentialPoolEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-
-
 
     def test_env_seeded_delete_stays_deleted(self):
         """#55217: DELETE must suppress the source or load_pool() resurrects it.
@@ -193,7 +185,9 @@ class TestCredentialPoolEndpoints:
         fake_key = "sk-or-" + "y" * 20
         save_env_value("OPENROUTER_API_KEY", fake_key)
         load_pool("openrouter")
-        assert self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
+        assert (
+            self.client.delete("/api/credentials/pool/openrouter/1").status_code == 200
+        )
         assert is_source_suppressed("openrouter", "env:OPENROUTER_API_KEY")
 
         r = self.client.post(
@@ -208,8 +202,6 @@ class TestCredentialPoolEndpoints:
         save_env_value("OPENROUTER_API_KEY", fake_key)
         sources = sorted(e.source for e in load_pool("openrouter").entries())
         assert sources == ["env:OPENROUTER_API_KEY", "manual"]
-
-
 
 
 class TestMemoryEndpoints:
@@ -243,9 +235,10 @@ class TestMemoryEndpoints:
         assert r.status_code == 200 and "USER.md" in r.json()["deleted"]
         assert (mem / "MEMORY.md").exists()
 
-        assert self.client.post(
-            "/api/memory/reset", json={"target": "bogus"}
-        ).status_code == 400
+        assert (
+            self.client.post("/api/memory/reset", json={"target": "bogus"}).status_code
+            == 400
+        )
 
 
 class TestPairingEndpoints:
@@ -322,7 +315,6 @@ class TestWebhookEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-
     def test_create_webhook_persists_script(self):
         from hermes_cli.config import load_config, save_config
 
@@ -379,7 +371,6 @@ class TestWebhookEndpoints:
         assert load_config()["platforms"]["webhook"]["enabled"] is True
         assert self.client.get("/api/webhooks").json()["enabled"] is True
 
-
     def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
         import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
@@ -414,8 +405,6 @@ class TestOpsEndpoints:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-
-
     def test_hooks_list_reads_config(self):
         from hermes_cli.config import load_config, save_config
 
@@ -449,9 +438,12 @@ class TestOpsEndpoints:
         assert created and created[0]["allowed"] is True
 
         # Unknown event rejected.
-        assert self.client.post(
-            "/api/ops/hooks", json={"event": "no_such_event", "command": "/x"}
-        ).status_code == 400
+        assert (
+            self.client.post(
+                "/api/ops/hooks", json={"event": "no_such_event", "command": "/x"}
+            ).status_code
+            == 400
+        )
 
         # Delete it.
         r = self.client.request(
@@ -462,7 +454,6 @@ class TestOpsEndpoints:
         assert r.status_code == 200
         hooks2 = self.client.get("/api/ops/hooks").json()["hooks"]
         assert not [h for h in hooks2 if h["command"] == "/bin/echo created"]
-
 
 
 class TestSystemStatsEndpoint:
@@ -503,7 +494,6 @@ class TestSessionManagementEndpoints:
         db.create_session(session_id="sess-x", source="cli")
         db.close()
 
-
     def test_stats_source_counts_use_direct_aggregate(self, monkeypatch):
         """Source badges must not materialise rich session rows.
 
@@ -515,7 +505,9 @@ class TestSessionManagementEndpoints:
         from hermes_state import SessionDB
 
         def fail_list_sessions_rich(self, *args, **kwargs):
-            raise AssertionError("stats should use grouped source counts, not list_sessions_rich")
+            raise AssertionError(
+                "stats should use grouped source counts, not list_sessions_rich"
+            )
 
         monkeypatch.setattr(SessionDB, "list_sessions_rich", fail_list_sessions_rich)
 
@@ -523,8 +515,6 @@ class TestSessionManagementEndpoints:
         assert r.status_code == 200
         body = r.json()
         assert body["by_source"]["cli"] >= 1
-
-
 
     def test_prune_attr_filter_suppresses_default_cutoff(self):
         # An attribute filter without an explicit older_than_days matches all
@@ -574,7 +564,6 @@ class TestSessionManagementEndpoints:
         db = SessionDB()
         assert db.get_session("sess-old-open") is not None
         db.close()
-
 
 
 class TestSkillsHubSearchEndpoint:
@@ -644,9 +633,7 @@ class TestSkillsHubSourcesEndpoint:
             srcs.insert(1, idx)
             return srcs
 
-        monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", _fake_router
-        )
+        monkeypatch.setattr("tools.skills_hub.create_source_router", _fake_router)
         r = self.client.get("/api/skills/hub/sources")
         assert r.status_code == 200
         body = r.json()
@@ -666,20 +653,15 @@ class TestSkillsHubPreviewEndpoint:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-
     def test_preview_returns_skill_md_text(self, monkeypatch):
-        monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
-        )
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
         bundle = _FakeBundle("github/owner/repo/x")
         meta = _FakeMeta("github/owner/repo/x")
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
             lambda ident, sources: (meta, bundle, None),
         )
-        r = self.client.get(
-            "/api/skills/hub/preview?identifier=github/owner/repo/x"
-        )
+        r = self.client.get("/api/skills/hub/preview?identifier=github/owner/repo/x")
         assert r.status_code == 200
         body = r.json()
         # Bytes-stored SKILL.md decodes to text.
@@ -689,9 +671,7 @@ class TestSkillsHubPreviewEndpoint:
         assert sorted(body["files"]) == ["SKILL.md", "icon.png", "notes.txt"]
 
     def test_preview_404_when_unresolved(self, monkeypatch):
-        monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
-        )
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
             lambda ident, sources: (None, None, None),
@@ -705,13 +685,10 @@ class TestSkillsHubScanEndpoint:
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
 
-
     def test_scan_returns_verdict_and_policy(self, monkeypatch):
         from tools.skills_guard import ScanResult, Finding
 
-        monkeypatch.setattr(
-            "tools.skills_hub.create_source_router", lambda: []
-        )
+        monkeypatch.setattr("tools.skills_hub.create_source_router", lambda: [])
         bundle = _FakeBundle("github/owner/repo/x", trust_level="community")
         monkeypatch.setattr(
             "hermes_cli.skills_hub._resolve_source_meta_and_bundle",
@@ -749,9 +726,7 @@ class TestSkillsHubScanEndpoint:
         # Avoid touching the filesystem during cleanup.
         monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)
 
-        r = self.client.get(
-            "/api/skills/hub/scan?identifier=github/owner/repo/x"
-        )
+        r = self.client.get("/api/skills/hub/scan?identifier=github/owner/repo/x")
         assert r.status_code == 200
         body = r.json()
         assert body["verdict"] == "caution"
@@ -829,12 +804,12 @@ class TestUpdateCheckEndpoint:
         # git/pip installs can apply the update in place from the dashboard.
         assert body["can_apply"] is True
 
-
-
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
         import hermes_cli.web_server as ws
 
-        monkeypatch.setattr(ws, "_dashboard_local_update_managed_externally", lambda: True)
+        monkeypatch.setattr(
+            ws, "_dashboard_local_update_managed_externally", lambda: True
+        )
         monkeypatch.setattr(
             ws,
             "detect_install_method",
@@ -851,8 +826,6 @@ class TestUpdateCheckEndpoint:
         assert "managed outside this dashboard" in body["message"]
 
 
-
-
 class TestDebugShareEndpoint:
     """POST /api/ops/debug-share returns the paste URLs synchronously so the
     dashboard can render them as copyable links (not a backgrounded log tail)."""
@@ -867,7 +840,6 @@ class TestDebugShareEndpoint:
         (logs / "agent.log").write_text("agent line\n")
         (logs / "errors.log").write_text("err line\n")
         (logs / "gateway.log").write_text("gw line\n")
-
 
     def test_redact_false_is_honored(self, monkeypatch):
         import hermes_cli.debug as dbg
@@ -914,7 +886,6 @@ class TestDebugShareEndpoint:
         assert r.status_code == 502
 
 
-
 class TestToolsConfigEndpoints:
     """Provider selection, API-key save, and post-setup spawn for toolsets —
     the dashboard surface that replicates the `hermes tools` configurator."""
@@ -922,9 +893,6 @@ class TestToolsConfigEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
-
-
-
 
     def test_save_env_writes_key_and_validates_allowlist(self):
         from hermes_cli.config import get_env_value
@@ -951,8 +919,6 @@ class TestToolsConfigEndpoints:
         # CLI-config parity: the key landed in the .env store the CLI reads.
         assert get_env_value(key) == "test-secret-123"
 
-
-
     def test_post_setup_unknown_toolset_400(self):
         r = self.client.post(
             "/api/tools/toolsets/not_a_toolset/post-setup",
@@ -961,11 +927,10 @@ class TestToolsConfigEndpoints:
         assert r.status_code == 400
 
 
-
-
 # ---------------------------------------------------------------------------
 # _spawn_hermes_action env scrubbing (#52470)
 # ---------------------------------------------------------------------------
+
 
 def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path):
     """The dashboard runs inside the gateway, so os.environ has
@@ -1002,6 +967,40 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 # ---------------------------------------------------------------------------
 # Desktop lifespan reaps orphan gateways at serve startup (#77276)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_desktop_starts_authenticated_loopback_api_server(monkeypatch):
+    import gateway.platforms.api_server as api_server_module
+    import hermes_cli.web_server as ws
+
+    captured = {}
+
+    class _FakeAdapter:
+        def __init__(self, config):
+            captured["config"] = config
+
+        async def connect(self):
+            captured["connected"] = True
+            return True
+
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("API_SERVER_ENABLED", "true")
+    monkeypatch.setenv("API_SERVER_HOST", "127.0.0.1")
+    monkeypatch.setenv("API_SERVER_PORT", "8642")
+    monkeypatch.setenv("API_SERVER_KEY", "a" * 64)
+    monkeypatch.setattr(api_server_module, "APIServerAdapter", _FakeAdapter)
+
+    adapter = await ws._start_desktop_api_server()
+
+    assert isinstance(adapter, _FakeAdapter)
+    assert captured["connected"] is True
+    assert captured["config"].extra == {
+        "host": "127.0.0.1",
+        "key": "a" * 64,
+        "port": "8642",
+    }
+
 
 def test_desktop_lifespan_reaps_orphan_gateways_on_startup(
     monkeypatch, _isolate_hermes_home

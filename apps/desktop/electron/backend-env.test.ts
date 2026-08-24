@@ -147,6 +147,29 @@ test('buildDesktopBackendEnv forces PYTHONUTF8 unless the user set it explicitly
   assert.equal(optedOut.PYTHONUTF8, '0')
 })
 
+test('desktop backend enables the loopback API server with a strong shared key', () => {
+  const generated = buildDesktopBackendEnv({
+    hermesHome: '/Users/test/.hermes',
+    currentEnv: { PATH: '/usr/bin' },
+    platform: 'darwin',
+    pathModule: path.posix
+  })
+
+  assert.equal(generated.API_SERVER_ENABLED, 'true')
+  assert.equal(generated.API_SERVER_HOST, '127.0.0.1')
+  assert.match(generated.API_SERVER_KEY, /^[a-f0-9]{64}$/)
+
+  const configured = buildDesktopBackendEnv({
+    currentEnv: {
+      API_SERVER_ENABLED: 'true',
+      API_SERVER_HOST: '127.0.0.1',
+      API_SERVER_KEY: 'configured-key-with-at-least-16-characters'
+    }
+  })
+
+  assert.equal(configured.API_SERVER_KEY, 'configured-key-with-at-least-16-characters')
+})
+
 test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root', () => {
   assert.equal(
     normalizeHermesHomeRoot('/Users/test/.hermes/profiles/oracle', { pathModule: path.posix }),

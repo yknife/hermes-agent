@@ -638,10 +638,20 @@ class ChatCompletionsTransport(ProviderTransport):
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning
             else:
-                _effort = "medium"
-                if reasoning_config and isinstance(reasoning_config, dict):
-                    _effort = reasoning_config.get("effort", "medium") or "medium"
-                extra_body["reasoning"] = {"enabled": True, "effort": _effort}
+                _reasoning_disabled = bool(
+                    isinstance(reasoning_config, dict)
+                    and reasoning_config.get("enabled") is False
+                )
+                if _reasoning_disabled:
+                    extra_body["reasoning"] = {"enabled": False}
+                else:
+                    _effort = "medium"
+                    if reasoning_config and isinstance(reasoning_config, dict):
+                        _effort = reasoning_config.get("effort", "medium") or "medium"
+                    extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": _effort,
+                    }
 
         if provider_name == "gemini":
             raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)

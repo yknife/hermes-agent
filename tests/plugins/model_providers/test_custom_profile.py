@@ -70,6 +70,33 @@ class TestCustomReasoningWireShape:
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
 
+    def test_local_qwen_llamacpp_uses_chat_template_thinking_switch(
+        self, custom_profile
+    ):
+        """llama.cpp Qwen templates read enable_thinking, not Ollama think."""
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3.5-4b",
+            base_url="http://127.0.0.1:8080/v1",
+        )
+
+        assert eb == {
+            "think": False,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        assert tl == {"reasoning_effort": "none"}
+
+    def test_hosted_qwen_does_not_receive_llamacpp_template_kwargs(
+        self, custom_profile
+    ):
+        eb, _tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="qwen3.5-4b",
+            base_url="https://example.test/v1",
+        )
+
+        assert eb == {"think": False}
+
     @pytest.mark.parametrize(
         "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]
     )
@@ -106,4 +133,3 @@ class TestCustomReasoningWithNumCtx:
         )
         assert eb == {"options": {"num_ctx": 8192}}
         assert tl == {}
-

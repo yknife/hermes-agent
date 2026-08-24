@@ -1,0 +1,14 @@
+[app]
+environment = "development"
+host = "127.0.0.1"
+port = 8000
+
+[database]
+url = "sqlite+aiosqlite:///./data/app.db"
+busy_timeout_ms = 5000
+wal = true
+foreign_keys = true
+
+[storage]
+root = "./storage"
+

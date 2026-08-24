@@ -1,6 +1,13 @@
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
+import path from 'node:path'
+import { Readable } from 'node:stream'
+
 const STREAMABLE_MEDIA_EXTENSIONS = [
   '.avi',
   '.flac',
+  '.jpeg',
+  '.jpg',
   '.m4a',
   '.mkv',
   '.mov',
@@ -8,13 +15,33 @@ const STREAMABLE_MEDIA_EXTENSIONS = [
   '.mp4',
   '.ogg',
   '.opus',
+  '.png',
   '.wav',
-  '.webm'
+  '.webm',
+  '.webp'
 ] as const
 
 const FORWARDED_MEDIA_REQUEST_HEADERS = ['accept', 'if-modified-since', 'if-none-match', 'if-range', 'range'] as const
 
 export const MEDIA_PROTOCOL = 'hermes-media'
+
+const MEDIA_CONTENT_TYPES: Record<string, string> = {
+  '.avi': 'video/x-msvideo',
+  '.flac': 'audio/flac',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
+  '.m4a': 'audio/mp4',
+  '.mkv': 'video/x-matroska',
+  '.mov': 'video/quicktime',
+  '.mp3': 'audio/mpeg',
+  '.mp4': 'video/mp4',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
+  '.png': 'image/png',
+  '.wav': 'audio/wav',
+  '.webm': 'video/webm',
+  '.webp': 'image/webp'
+}
 
 type MediaProtocolMode = 'remote' | 'stream'
 
@@ -92,6 +119,99 @@ export function remoteMediaEndpoint(baseUrl: string, filePath: string): string {
   url.searchParams.set('path', filePath)
 
   return url.toString()
+}
+
+interface ByteRange {
+  end: number
+  start: number
+}
+
+function parseByteRange(value: null | string, size: number): ByteRange | null | undefined {
+  if (!value) {
+    return null
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(value.trim())
+
+  if (!match || size <= 0) {
+    return undefined
+  }
+
+  const [, rawStart, rawEnd] = match
+
+  if (!rawStart && !rawEnd) {
+    return undefined
+  }
+
+  if (!rawStart) {
+    const suffixLength = Number(rawEnd)
+
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+      return undefined
+    }
+
+    return { end: size - 1, start: Math.max(0, size - suffixLength) }
+  }
+
+  const start = Number(rawStart)
+  const requestedEnd = rawEnd ? Number(rawEnd) : size - 1
+
+  if (
+    !Number.isSafeInteger(start)
+    || !Number.isSafeInteger(requestedEnd)
+    || start < 0
+    || start >= size
+    || requestedEnd < start
+  ) {
+    return undefined
+  }
+
+  return { end: Math.min(requestedEnd, size - 1), start }
+}
+
+export async function localMediaResponse(
+  filePath: string,
+  requestHeaders: Headers,
+  method: MediaRequestMethod
+): Promise<Response> {
+  const file = await stat(filePath)
+
+  if (!file.isFile()) {
+    throw new Error('Media path is not a file')
+  }
+
+  const range = parseByteRange(requestHeaders.get('range'), file.size)
+  const contentType = MEDIA_CONTENT_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream'
+
+  if (range === undefined) {
+    return new Response(null, {
+      headers: {
+        'accept-ranges': 'bytes',
+        'content-range': `bytes */${file.size}`,
+        'content-type': contentType
+      },
+      status: 416
+    })
+  }
+
+  const start = range?.start ?? 0
+  const end = range?.end ?? Math.max(0, file.size - 1)
+
+  const headers = new Headers({
+    'accept-ranges': 'bytes',
+    'content-length': String(file.size ? end - start + 1 : 0),
+    'content-type': contentType
+  })
+
+  if (range) {
+    headers.set('content-range', `bytes ${start}-${end}/${file.size}`)
+  }
+
+  const body = method === 'HEAD' || file.size === 0
+    ? null
+    : Readable.toWeb(createReadStream(filePath, { end, start })) as unknown as BodyInit
+
+  return new Response(body, { headers, status: range ? 206 : 200 })
 }
 
 export function createMediaProtocolHandler(dependencies: MediaProtocolDependencies) {

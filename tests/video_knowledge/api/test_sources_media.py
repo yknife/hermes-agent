@@ -1,0 +1,188 @@
+import asyncio
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from plugins.video_knowledge.backend.app.core.config import Settings
+from plugins.video_knowledge.backend.app.domain.enums import SourceType
+from plugins.video_knowledge.backend.app.infrastructure.db.base import Base, Job, Source
+from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.main import create_app
+from plugins.video_knowledge.backend.app.services.media_service import (
+    MediaService,
+    SourceService,
+    classify_source_type,
+    normalize_url,
+)
+from plugins.video_knowledge.backend.app.services.transcript_service import (
+    TranscriptService,
+)
+from plugins.video_knowledge.backend.media_adapters.models import (
+    DownloadResult,
+    MediaFileInfo,
+    MediaProbe,
+    SubtitleDownloadResult,
+)
+from plugins.video_knowledge.backend.transcript import TranscriptNormalizer
+from sqlalchemy import func, select
+
+
+async def initialize_schema(url: str) -> None:
+    database = Database(url)
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    await database.dispose()
+
+
+def test_normalize_url_removes_tracking_and_fragment() -> None:
+    canonical, platform = normalize_url(
+        "HTTPS://WWW.YouTube.com/watch?utm_source=test&v=abc&si=secret#chapter"
+    )
+    assert canonical == "https://www.youtube.com/watch?v=abc"
+    assert platform == "youtube"
+
+
+def test_classify_source_type_distinguishes_live_rooms_from_videos() -> None:
+    assert (
+        classify_source_type("https://live.bilibili.com/123", "bilibili")
+        == SourceType.LIVE
+    )
+    assert (
+        classify_source_type("https://www.bilibili.com/video/BV123", "bilibili")
+        == SourceType.VIDEO
+    )
+    assert (
+        classify_source_type("https://www.twitch.tv/videos/123", "twitch")
+        == SourceType.VIDEO
+    )
+
+
+def test_duplicate_ingest_reuses_source_and_job(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'api.db'}"
+    asyncio.run(initialize_schema(database_url))
+    settings = Settings(database_url=database_url, storage_root=tmp_path / "storage")
+    with TestClient(create_app(settings)) as client:
+        first = client.post(
+            "/api/v1/sources/ingest",
+            json={"url": "https://youtu.be/example?utm_source=one", "max_height": 720},
+        )
+        second = client.post(
+            "/api/v1/sources/ingest",
+            json={"url": "https://youtu.be/example?utm_source=two", "max_height": 1080},
+        )
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["duplicate"] is True
+    assert second.json()["source"]["id"] == first.json()["source"]["id"]
+    assert second.json()["job"]["id"] == first.json()["job"]["id"]
+
+    async def counts() -> tuple[int, int]:
+        database = Database(database_url)
+        try:
+            async with database.session() as session:
+                return (
+                    int(await session.scalar(select(func.count(Source.id))) or 0),
+                    int(await session.scalar(select(func.count(Job.id))) or 0),
+                )
+        finally:
+            await database.dispose()
+
+    assert asyncio.run(counts()) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_verified_download_is_registered_as_media_asset(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'pipeline.db'}"
+    await initialize_schema(database_url)
+    database = Database(database_url)
+    storage = tmp_path / "storage"
+    source, _job, _media, _duplicate = await SourceService(database).ingest(
+        "https://example.test/videos/abc"
+    )
+    temp_dir = storage / "temp"
+    temp_dir.mkdir(parents=True)
+    downloaded = temp_dir / "source.mp4"
+    downloaded.write_bytes(b"verified-media-content")
+    probe = MediaProbe(
+        external_id="abc",
+        title="Sprint 3 Demo",
+        webpage_url="https://example.test/videos/abc",
+        platform="example",
+        duration_seconds=3.5,
+    )
+    info = MediaFileInfo(
+        duration_seconds=3.5,
+        container="mp4",
+        codec="h264",
+        mime_type="video/mp4",
+        metadata={"streams": [{"codec_name": "h264"}]},
+    )
+    try:
+        item = await MediaService(database, storage).register(
+            source.id, probe, DownloadResult(downloaded, None), info
+        )
+        loaded, assets = await MediaService(database, storage).get_media(item.id)
+    finally:
+        await database.dispose()
+    assert loaded.title == "Sprint 3 Demo"
+    assert len(assets) == 1
+    assert assets[0].kind == "VIDEO"
+    assert (storage / assets[0].relative_path).read_bytes() == b"verified-media-content"
+
+
+def test_transcript_api_search_and_video_range(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'transcript.db'}"
+    asyncio.run(initialize_schema(database_url))
+    storage = tmp_path / "storage"
+
+    async def prepare() -> str:
+        database = Database(database_url)
+        source, _job, _media, _duplicate = await SourceService(database).ingest(
+            "https://example.test/videos/transcript"
+        )
+        temp = storage / "temp"
+        temp.mkdir(parents=True)
+        video = temp / "source.mp4"
+        video.write_bytes(b"0123456789-video")
+        probe = MediaProbe(
+            external_id="transcript",
+            title="Transcript Demo",
+            webpage_url="https://example.test/videos/transcript",
+            platform="example",
+        )
+        info = MediaFileInfo(5.0, "mp4", "h264", "video/mp4", {})
+        media = await MediaService(database, storage).register(
+            source.id, probe, DownloadResult(video, None), info
+        )
+        subtitle_path = temp / "subtitle.zh-CN.vtt"
+        subtitle_path.write_text(
+            "WEBVTT\n\n00:01.000 --> 00:03.000\n这是字幕测试内容\n",
+            encoding="utf-8",
+        )
+        normalized = TranscriptNormalizer().parse(
+            subtitle_path, language="zh-CN", source_type="subtitle"
+        )
+        await TranscriptService(database, storage).register(
+            media.id,
+            SubtitleDownloadResult(subtitle_path, "zh-CN", False),
+            normalized,
+        )
+        await database.dispose()
+        return media.id
+
+    media_id = asyncio.run(prepare())
+    settings = Settings(database_url=database_url, storage_root=storage)
+    with TestClient(create_app(settings)) as client:
+        transcript = client.get(f"/api/v1/media/{media_id}/transcript")
+        search = client.get(
+            "/api/v1/search", params={"q": "字幕测试", "media_id": media_id}
+        )
+        stream = client.get(
+            f"/api/v1/media/{media_id}/stream", headers={"Range": "bytes=0-7"}
+        )
+    assert transcript.status_code == 200
+    assert transcript.json()["segments"][0]["start_ms"] == 1000
+    assert search.status_code == 200
+    assert search.json()[0]["segment"]["text"] == "这是字幕测试内容"
+    assert stream.status_code == 206
+    assert stream.content == b"01234567"

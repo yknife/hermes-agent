@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import path from 'node:path'
 
 // Match the POSIX fallback surface used by the Python terminal environment.
@@ -131,6 +132,13 @@ function buildDesktopBackendEnv({
   const key = pathEnvKey(currentEnv, platform)
 
   return {
+    // Video Knowledge uses the same authenticated OpenAI-compatible listener
+    // as Hermes itself. Desktop owns a strong process-local key when the user
+    // has not configured one; the backend and its supervised worker inherit
+    // the same value, and it is never persisted or exposed to the renderer.
+    API_SERVER_ENABLED: currentEnv?.API_SERVER_ENABLED ?? 'true',
+    API_SERVER_HOST: currentEnv?.API_SERVER_HOST ?? '127.0.0.1',
+    API_SERVER_KEY: currentEnv?.API_SERVER_KEY || randomBytes(32).toString('hex'),
     PYTHONPATH: appendUniquePathEntries([...pythonPathEntries, currentPythonPath], { delimiter }),
     // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and
     // subprocess defaults are UTF-8 even on non-UTF-8 Windows locales (GBK,

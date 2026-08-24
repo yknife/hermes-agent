@@ -1,8 +1,13 @@
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import {
   createMediaProtocolHandler,
   isStreamableMediaPath,
+  localMediaResponse,
   type MediaProtocolDependencies,
   mediaRequestHeaders,
   remoteMediaEndpoint
@@ -30,9 +35,10 @@ function request(url: string, headers: Record<string, string> = {}, method = 'GE
 }
 
 describe('media protocol helpers', () => {
-  it('recognises only supported audio/video extensions case-insensitively', () => {
+  it('recognises supported audio, video, and thumbnail extensions case-insensitively', () => {
     expect(isStreamableMediaPath('/tmp/render.MP4')).toBe(true)
     expect(isStreamableMediaPath('/tmp/voice.flac')).toBe(true)
+    expect(isStreamableMediaPath('/tmp/thumbnail.JPG')).toBe(true)
     expect(isStreamableMediaPath('/tmp/secrets.txt')).toBe(false)
   })
 
@@ -56,6 +62,59 @@ describe('media protocol helpers', () => {
     expect(endpoint.pathname).toBe('/hermes/api/files/stream')
     expect(endpoint.searchParams.get('path')).toBe('/tmp/a b.mp4')
   })
+
+  it('serves real local byte ranges so media elements can seek', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-media-range-'))
+    const filePath = path.join(directory, 'clip.mp4')
+
+    try {
+      await writeFile(filePath, Buffer.from('0123456789'))
+
+      const response = await localMediaResponse(filePath, new Headers({ range: 'bytes=3-6' }), 'GET')
+
+      expect(response.status).toBe(206)
+      expect(response.headers.get('accept-ranges')).toBe('bytes')
+      expect(response.headers.get('content-range')).toBe('bytes 3-6/10')
+      expect(response.headers.get('content-length')).toBe('4')
+      expect(response.headers.get('content-type')).toBe('video/mp4')
+      expect(await response.text()).toBe('3456')
+    } finally {
+      await rm(directory, { force: true, recursive: true })
+    }
+  })
+
+  it('rejects unsatisfiable local byte ranges with the file size', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-media-range-'))
+    const filePath = path.join(directory, 'clip.webm')
+
+    try {
+      await writeFile(filePath, Buffer.from('small'))
+
+      const response = await localMediaResponse(filePath, new Headers({ range: 'bytes=99-100' }), 'GET')
+
+      expect(response.status).toBe(416)
+      expect(response.headers.get('content-range')).toBe('bytes */5')
+    } finally {
+      await rm(directory, { force: true, recursive: true })
+    }
+  })
+
+  it('serves thumbnail images with their browser-readable content type', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'hermes-media-thumbnail-'))
+    const filePath = path.join(directory, 'thumbnail.jpg')
+
+    try {
+      await writeFile(filePath, Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+
+      const response = await localMediaResponse(filePath, new Headers(), 'GET')
+
+      expect(response.status).toBe(200)
+      expect(response.headers.get('content-type')).toBe('image/jpeg')
+      expect((await response.arrayBuffer()).byteLength).toBe(4)
+    } finally {
+      await rm(directory, { force: true, recursive: true })
+    }
+  })
 })
 
 describe('createMediaProtocolHandler', () => {
@@ -75,6 +134,23 @@ describe('createMediaProtocolHandler', () => {
     const [, headers] = vi.mocked(deps.fetchLocal).mock.calls[0]
     expect(headers.get('range')).toBe('bytes=1-3')
     expect(headers.get('authorization')).toBeNull()
+  })
+
+  it('allows local thumbnails through the same protected file resolver', async () => {
+    const deps = dependencies({
+      fetchLocal: vi.fn(async () => new Response('jpeg', {
+        headers: { 'content-type': 'image/jpeg' },
+        status: 200
+      }))
+    })
+
+    const response = await createMediaProtocolHandler(deps)(
+      request('hermes-media://stream/C%3A%5CHermes%5Cthumbnail.jpg')
+    )
+
+    expect(response.status).toBe(200)
+    expect(deps.resolveLocalFile).toHaveBeenCalledWith('C:\\Hermes\\thumbnail.jpg')
+    expect(deps.fetchLocal).toHaveBeenCalledOnce()
   })
 
   it('preserves explicit HEAD requests through the local stream fetch', async () => {
