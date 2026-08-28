@@ -15,6 +15,7 @@ import type {
   LiveSourceCreateResult,
   LiveSourceOptions,
   Media,
+  MediaDeleteResult,
   PlaybackInfo,
   Probe,
   RuntimeStatus,
@@ -66,6 +67,8 @@ export const jobAction = (jobId: string, action: 'cancel' | 'pause' | 'resume' |
   call<Job>(`/jobs/${encodeURIComponent(jobId)}/${action}`, { method: 'POST' })
 export const fetchMedia = () => call<Media[]>('/media')
 export const fetchMediaItem = (mediaId: string) => call<Media>(`/media/${encodeURIComponent(mediaId)}`)
+export const deleteMedia = (mediaId: string) =>
+  call<MediaDeleteResult>(`/media/${encodeURIComponent(mediaId)}`, { method: 'DELETE' })
 export const fetchPlayback = (mediaId: string) => call<PlaybackInfo>(`/media/${encodeURIComponent(mediaId)}/playback`)
 export const fetchTranscript = (mediaId: string) => call<Transcript>(`/media/${encodeURIComponent(mediaId)}/transcript`)
 export const createTranscript = (mediaId: string) =>

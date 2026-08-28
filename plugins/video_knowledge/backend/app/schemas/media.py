@@ -222,6 +222,13 @@ class MediaRead(BaseModel):
         )
 
 
+class MediaDeleteRead(BaseModel):
+    media_id: str
+    deleted_asset_count: int
+    deleted_bytes: int
+    source_deleted: bool
+
+
 class IngestRead(BaseModel):
     source: SourceRead
     job: JobRead

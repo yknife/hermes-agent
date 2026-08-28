@@ -16,6 +16,7 @@ import { useMemo, useRef, useState } from 'react'
 import {
   analyze,
   createTranscript,
+  deleteMedia,
   fetchJobs,
   fetchKnowledge,
   fetchMedia,
@@ -28,6 +29,7 @@ import {
 import { stageLibraryChatContext, stageMediaChatContext } from './chat-context'
 import { durationLabel, errorMessage, fileSize, readableContent, timestamp } from './format'
 import { buildKnowledgeTimeline } from './knowledge-timeline'
+import type { Media } from './types'
 
 export function LibraryView({
   initialMediaId,
@@ -94,6 +96,34 @@ export function LibraryView({
   const analysisJob = useMutation({
     mutationFn: () => analyze(activeMediaId!),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['video-knowledge'] })
+  })
+
+  const deleteMediaMutation = useMutation({
+    mutationFn: async (item: { id: string; title: string }) => {
+      if (!window.confirm(`确定要永久删除“${item.title}”吗？\n\n视频文件、字幕、知识结果及相关本地资产都将被清除，此操作无法撤销。`)) {
+        return null
+      }
+
+      player.current?.pause()
+      player.current?.removeAttribute('src')
+      player.current?.load()
+      await deleteMedia(item.id)
+
+      return item.id
+    },
+    onSuccess: deletedMediaId => {
+      if (!deletedMediaId) {
+        return
+      }
+
+      queryClient.setQueryData<Media[]>(['video-knowledge', 'media'], current =>
+        current?.filter(item => item.id !== deletedMediaId)
+      )
+      setSelected(null)
+      setQuery('')
+      setCurrentMs(0)
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge'] })
+    }
   })
 
   const visibleSegments = useMemo(() => {
@@ -218,8 +248,20 @@ export function LibraryView({
                   <Codicon name="comment-discussion" />
                   问 Hermes
                 </Button>
+                <Button
+                  disabled={deleteMediaMutation.isPending}
+                  onClick={() => deleteMediaMutation.mutate({ id: activeMedia.id, title: activeMedia.title })}
+                  size="xs"
+                  variant="destructive"
+                >
+                  <Codicon name="trash" />
+                  {deleteMediaMutation.isPending ? '删除中…' : '删除'}
+                </Button>
               </div>
             </header>
+            {deleteMediaMutation.error && (
+              <p className="text-xs text-destructive">{errorMessage(deleteMediaMutation.error)}</p>
+            )}
 
             <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(24rem,1.25fr)_minmax(20rem,0.9fr)]">
               <div className="space-y-4">

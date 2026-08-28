@@ -5,7 +5,19 @@ import pytest
 from fastapi.testclient import TestClient
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import SourceType
-from plugins.video_knowledge.backend.app.infrastructure.db.base import Base, Job, Source
+from plugins.video_knowledge.backend.app.domain.errors import MediaDeleteConflictError
+from plugins.video_knowledge.backend.app.infrastructure.db.base import (
+    Base,
+    Job,
+    JobAttempt,
+    JobEvent,
+    KnowledgeDocument,
+    MediaAsset,
+    MediaItem,
+    Source,
+    Transcript,
+    TranscriptSegment,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.main import create_app
 from plugins.video_knowledge.backend.app.services.media_service import (
@@ -13,6 +25,10 @@ from plugins.video_knowledge.backend.app.services.media_service import (
     SourceService,
     classify_source_type,
     normalize_url,
+)
+from plugins.video_knowledge.backend.app.services.job_service import (
+    JobStateMachine,
+    new_id,
 )
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
@@ -128,6 +144,106 @@ async def test_verified_download_is_registered_as_media_asset(tmp_path: Path) ->
     assert len(assets) == 1
     assert assets[0].kind == "VIDEO"
     assert (storage / assets[0].relative_path).read_bytes() == b"verified-media-content"
+
+
+@pytest.mark.asyncio
+async def test_delete_media_removes_files_and_complete_database_graph(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'delete.db'}"
+    await initialize_schema(database_url)
+    database = Database(database_url)
+    storage = tmp_path / "storage"
+    source, job, _media, _duplicate = await SourceService(database).ingest(
+        "https://example.test/videos/delete-me"
+    )
+    claimed = await JobStateMachine(database).claim_next("test-worker", 60)
+    assert claimed is not None and claimed.id == job.id
+
+    temp = storage / "temp"
+    temp.mkdir(parents=True)
+    video = temp / "source.mp4"
+    video.write_bytes(b"video-to-delete")
+    media = await MediaService(database, storage).register(
+        source.id,
+        MediaProbe(
+            external_id="delete-me",
+            title="Delete me",
+            webpage_url="https://example.test/videos/delete-me",
+            platform="example",
+        ),
+        DownloadResult(video, None),
+        MediaFileInfo(1.0, "mp4", "h264", "video/mp4", {}),
+    )
+    media_dir = storage / "media" / media.id
+
+    with pytest.raises(MediaDeleteConflictError):
+        await MediaService(database, storage).delete_media(media.id)
+    assert media_dir.is_dir()
+
+    subtitle = temp / "subtitle.zh-CN.vtt"
+    subtitle.write_text(
+        "WEBVTT\n\n00:00.000 --> 00:01.000\n待删除字幕\n", encoding="utf-8"
+    )
+    normalized = TranscriptNormalizer().parse(
+        subtitle, language="zh-CN", source_type="subtitle"
+    )
+    transcript = await TranscriptService(database, storage).register(
+        media.id,
+        SubtitleDownloadResult(subtitle, "zh-CN", False),
+        normalized,
+    )
+    async with database.session() as session, session.begin():
+        session.add(
+            KnowledgeDocument(
+                id=new_id("knowledge"),
+                media_id=media.id,
+                transcript_id=transcript.id,
+                document_type="SUMMARY",
+                version=1,
+                status="READY",
+                content_json='{"summary":"待删除"}',
+                model="test",
+                prompt_version="test",
+                fingerprint="delete-test",
+            )
+        )
+    await JobStateMachine(database).complete(job.id, "test-worker")
+    await database.dispose()
+
+    settings = Settings(database_url=database_url, storage_root=storage)
+    with TestClient(create_app(settings)) as client:
+        response = client.delete(f"/api/v1/media/{media.id}")
+        missing = client.get(f"/api/v1/media/{media.id}")
+
+    assert response.status_code == 200
+    assert response.json()["media_id"] == media.id
+    assert response.json()["deleted_asset_count"] == 4
+    assert response.json()["source_deleted"] is True
+    assert missing.status_code == 404
+    assert not media_dir.exists()
+
+    database = Database(database_url)
+    try:
+        async with database.session() as session:
+            models = (
+                Source,
+                Job,
+                JobAttempt,
+                JobEvent,
+                MediaItem,
+                MediaAsset,
+                Transcript,
+                TranscriptSegment,
+                KnowledgeDocument,
+            )
+            counts = [
+                int(await session.scalar(select(func.count(model.id))) or 0)
+                for model in models
+            ]
+    finally:
+        await database.dispose()
+    assert counts == [0] * len(counts)
 
 
 def test_transcript_api_search_and_video_range(tmp_path: Path) -> None:

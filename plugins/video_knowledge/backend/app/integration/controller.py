@@ -29,6 +29,7 @@ from plugins.video_knowledge.backend.app.schemas.media import (
     LiveSourceCreateRequest,
     LiveSourceRead,
     LiveSourceUpdateRequest,
+    MediaDeleteRead,
     MediaRead,
     ProbeRead,
     SourceIngestRequest,
@@ -291,6 +292,18 @@ class VideoKnowledgeController:
         if len(parts) == 2 and parts[0] == "media" and method == "GET":
             item, assets = await self._media(database).get_media(parts[1])
             return self._json(MediaRead.from_orm_media(item, assets))
+        if len(parts) == 2 and parts[0] == "media" and method == "DELETE":
+            asset_count, deleted_bytes, source_deleted = await self._media(
+                database
+            ).delete_media(parts[1])
+            return self._json(
+                MediaDeleteRead(
+                    media_id=parts[1],
+                    deleted_asset_count=asset_count,
+                    deleted_bytes=deleted_bytes,
+                    source_deleted=source_deleted,
+                )
+            )
         if (
             len(parts) == 3
             and parts[0] == "media"

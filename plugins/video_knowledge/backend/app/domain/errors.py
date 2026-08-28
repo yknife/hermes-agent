@@ -34,6 +34,14 @@ class MediaNotFoundError(DomainError):
     code = "MEDIA_NOT_FOUND"
 
 
+class MediaDeleteConflictError(DomainError):
+    code = "MEDIA_DELETE_CONFLICT"
+
+
+class MediaDeleteStorageError(DomainError):
+    code = "MEDIA_DELETE_STORAGE_ERROR"
+
+
 class InvalidSourceUrlError(DomainError):
     code = "INVALID_SOURCE_URL"
 

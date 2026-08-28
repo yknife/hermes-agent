@@ -5,13 +5,14 @@ import json
 import logging
 import mimetypes
 import os
+import shutil
 from collections.abc import Awaitable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from plugins.video_knowledge.backend.app.domain.enums import (
     JobStatus,
@@ -21,11 +22,14 @@ from plugins.video_knowledge.backend.app.domain.enums import (
 )
 from plugins.video_knowledge.backend.app.domain.errors import (
     InvalidSourceUrlError,
+    MediaDeleteConflictError,
+    MediaDeleteStorageError,
     MediaNotFoundError,
     SourceNotFoundError,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Job,
+    LiveSession,
     MediaAsset,
     MediaItem,
     Source,
@@ -45,6 +49,13 @@ from plugins.video_knowledge.backend.media_adapters.models import (
 )
 
 TRACKING_PARAMS = {"fbclid", "gclid", "si", "spm_id_from", "feature"}
+MEDIA_DELETE_ACTIVE_STATUSES = {
+    JobStatus.PENDING.value,
+    JobStatus.RUNNING.value,
+    JobStatus.RETRY_WAIT.value,
+    JobStatus.PAUSED.value,
+    JobStatus.WAITING_LIVE.value,
+}
 logger = logging.getLogger(__name__)
 
 
@@ -526,6 +537,111 @@ class MediaService:
                 ).all()
             )
             return item, assets
+
+    async def delete_media(self, media_id: str) -> tuple[int, int, bool]:
+        """Delete one media item, its database graph, and its owned local files."""
+        media_root = (self.storage_root / "media").resolve()
+        media_dir = (media_root / media_id).resolve()
+        if media_dir.parent != media_root:
+            raise MediaNotFoundError("媒体不存在", details={"media_id": media_id})
+
+        async with self.database.session() as session:
+            media = await session.get(MediaItem, media_id)
+            if media is None:
+                raise MediaNotFoundError("媒体不存在", details={"media_id": media_id})
+            source = await session.get(Source, media.source_id)
+            assets = list(
+                (
+                    await session.scalars(
+                        select(MediaAsset).where(MediaAsset.media_id == media_id)
+                    )
+                ).all()
+            )
+            source_deleted = (
+                source is not None and source.type == SourceType.VIDEO.value
+            )
+            active_scope = (
+                Job.source_id == media.source_id
+                if source_deleted
+                else Job.media_id == media_id
+            )
+            active_job_id = await session.scalar(
+                select(Job.id)
+                .where(
+                    active_scope,
+                    Job.status.in_(MEDIA_DELETE_ACTIVE_STATUSES),
+                )
+                .limit(1)
+            )
+            if active_job_id is not None:
+                raise MediaDeleteConflictError(
+                    "媒体仍有关联任务在运行，请先取消任务后再删除",
+                    details={"media_id": media_id, "job_id": active_job_id},
+                )
+            source_id = media.source_id
+
+        staged_dir: Path | None = None
+        if await asyncio.to_thread(media_dir.exists):
+            staged_dir = media_root / f".deleting-{media_id}-{new_id('op')}"
+            try:
+                await asyncio.to_thread(os.replace, media_dir, staged_dir)
+            except OSError as exc:
+                raise MediaDeleteStorageError(
+                    "无法移除本地媒体文件，请停止播放后重试",
+                    details={"media_id": media_id},
+                ) from exc
+
+        try:
+            async with self.database.session() as session, session.begin():
+                current = await session.get(MediaItem, media_id)
+                if current is None:
+                    raise MediaNotFoundError(
+                        "媒体不存在", details={"media_id": media_id}
+                    )
+                current_source = await session.get(Source, source_id)
+                delete_scope = (
+                    Job.source_id == source_id
+                    if source_deleted
+                    else Job.media_id == media_id
+                )
+                active_job_id = await session.scalar(
+                    select(Job.id)
+                    .where(
+                        delete_scope,
+                        Job.status.in_(MEDIA_DELETE_ACTIVE_STATUSES),
+                    )
+                    .limit(1)
+                )
+                if active_job_id is not None:
+                    raise MediaDeleteConflictError(
+                        "媒体仍有关联任务在运行，请先取消任务后再删除",
+                        details={"media_id": media_id, "job_id": active_job_id},
+                    )
+                await session.execute(
+                    delete(LiveSession).where(LiveSession.media_id == media_id)
+                )
+                await session.execute(delete(Job).where(delete_scope))
+                await session.delete(current)
+                if source_deleted and current_source is not None:
+                    await session.delete(current_source)
+        except Exception:
+            if staged_dir is not None and await asyncio.to_thread(staged_dir.exists):
+                await asyncio.to_thread(os.replace, staged_dir, media_dir)
+            raise
+
+        if staged_dir is not None:
+            try:
+                await asyncio.to_thread(shutil.rmtree, staged_dir)
+            except OSError as exc:
+                logger.exception(
+                    "media_delete_storage_cleanup_failed",
+                    extra={"media_id": media_id},
+                )
+                raise MediaDeleteStorageError(
+                    "媒体数据已删除，但本地文件清理失败",
+                    details={"media_id": media_id},
+                ) from exc
+        return len(assets), sum(asset.size_bytes for asset in assets), source_deleted
 
     async def queue_transcript(
         self,

@@ -7,7 +7,7 @@ from plugins.video_knowledge.backend.app.api.deps import get_database
 from plugins.video_knowledge.backend.app.domain.errors import TranscriptNotFoundError
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.schemas.jobs import JobRead
-from plugins.video_knowledge.backend.app.schemas.media import MediaRead
+from plugins.video_knowledge.backend.app.schemas.media import MediaDeleteRead, MediaRead
 from plugins.video_knowledge.backend.app.schemas.transcripts import (
     TranscriptRead,
     TranscriptSearchResult,
@@ -43,6 +43,23 @@ async def get_media(
         database, request.app.state.settings.storage_root
     ).get_media(media_id)
     return MediaRead.from_orm_media(item, assets)
+
+
+@router.delete("/{media_id}", response_model=MediaDeleteRead)
+async def delete_media(
+    media_id: str,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> MediaDeleteRead:
+    asset_count, deleted_bytes, source_deleted = await MediaService(
+        database, request.app.state.settings.storage_root
+    ).delete_media(media_id)
+    return MediaDeleteRead(
+        media_id=media_id,
+        deleted_asset_count=asset_count,
+        deleted_bytes=deleted_bytes,
+        source_deleted=source_deleted,
+    )
 
 
 @router.get("/{media_id}/stream", response_class=FileResponse)

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { bindApi, fetchRuntimeStatus, ingest, mediaPlaybackUrl, mediaThumbnailUrl, probeSource } from './api'
+import { bindApi, deleteMedia, fetchRuntimeStatus, ingest, mediaPlaybackUrl, mediaThumbnailUrl, probeSource } from './api'
 import type { IngestOptions } from './types'
 
 const dispose: Array<() => void> = []
@@ -77,5 +77,14 @@ describe('video knowledge plugin API', () => {
     await fetchRuntimeStatus()
 
     expect(rest).toHaveBeenCalledWith('/system/runtime', undefined)
+  })
+
+  it('deletes media through the plugin REST namespace', async () => {
+    const rest = vi.fn().mockResolvedValue({ media_id: 'media/one' })
+
+    dispose.push(bindApi(rest))
+    await deleteMedia('media/one')
+
+    expect(rest).toHaveBeenCalledWith('/media/media%2Fone', { method: 'DELETE' })
   })
 })

@@ -205,6 +205,13 @@ export interface Media {
   assets: MediaAsset[]
 }
 
+export interface MediaDeleteResult {
+  media_id: string
+  deleted_asset_count: number
+  deleted_bytes: number
+  source_deleted: boolean
+}
+
 export interface IngestResult {
   source: Source
   job: Job

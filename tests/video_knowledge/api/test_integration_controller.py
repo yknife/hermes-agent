@@ -107,6 +107,7 @@ async def test_controller_runs_without_a_separate_http_service(
     events = await controller.dispatch(
         "GET", f"/jobs/{ingest.body['job']['id']}/events"
     )
+    await controller.dispatch("POST", f"/jobs/{ingest.body['job']['id']}/cancel")
 
     database, _client = await runtime.resources()
     media_temp = tmp_path / "source.mp4"
@@ -123,6 +124,9 @@ async def test_controller_runs_without_a_separate_http_service(
         MediaFileInfo(1, "mp4", "h264", "video/mp4", {}),
     )
     playback = await controller.dispatch("GET", f"/media/{media.id}/playback")
+    playback_path = Path(playback.body["path"])
+    playback_bytes = await asyncio.to_thread(playback_path.read_bytes)
+    deleted = await controller.dispatch("DELETE", f"/media/{media.id}")
 
     assert health.body["components"]["database"]["status"] == "ok"
     assert ingest.status == 201
@@ -144,5 +148,8 @@ async def test_controller_runs_without_a_separate_http_service(
     assert runtime_status.body == {"ready": True, "tools": []}
     assert events.body[0]["data"]["message"] == "任务已创建"
     assert playback.body["mime_type"] == "video/mp4"
-    assert await asyncio.to_thread(Path(playback.body["path"]).read_bytes) == b"video"
+    assert playback_bytes == b"video"
+    assert deleted.body["media_id"] == media.id
+    assert deleted.body["deleted_asset_count"] == 1
+    assert not await asyncio.to_thread(playback_path.exists)
     await runtime.stop()
