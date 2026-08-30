@@ -396,6 +396,41 @@ def _structured_output_instruction(body: Any) -> Optional[str]:
     )
 
 
+def _is_response_format_unavailable_error(value: Any) -> bool:
+    """Classify a provider capability error without exposing its raw text."""
+
+    detail = str(value or "").casefold()
+    if "response_format" not in detail and "response format" not in detail:
+        return False
+    return any(
+        marker in detail
+        for marker in (
+            "unavailable",
+            "unsupported",
+            "not supported",
+            "does not support",
+        )
+    )
+
+
+def _provider_response_format(
+    provider: Any, response_format: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Adapt the grammar constraint to a provider's supported format level.
+
+    DeepSeek accepts ``json_object`` but currently rejects ``json_schema``.
+    The full schema remains in the trusted ephemeral system instruction and
+    VKC validates the returned object and citations strictly after generation.
+    """
+
+    if not isinstance(response_format, dict):
+        return response_format
+    provider_name = str(provider or "").strip().casefold()
+    if provider_name == "deepseek" and response_format.get("type") == "json_schema":
+        return {"type": "json_object"}
+    return response_format
+
+
 def _apply_runtime_agent_overrides(
     runtime_kwargs: Dict[str, Any], overrides: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -2369,7 +2404,13 @@ class APIServerAdapter(BasePlatformAdapter):
             if _VideoKnowledgeDomainError is not None and isinstance(
                 exc, _VideoKnowledgeDomainError
             ):
-                status_code = 404 if exc.code.endswith("NOT_FOUND") else 409
+                status_code = (
+                    404
+                    if exc.code.endswith("NOT_FOUND")
+                    else 422
+                    if exc.code == "INVALID_LOCAL_MEDIA"
+                    else 409
+                )
                 return web.json_response(
                     {
                         "error": {
@@ -3372,9 +3413,12 @@ class APIServerAdapter(BasePlatformAdapter):
             # provider request constraint so llama.cpp/vLLM can apply their
             # JSON grammar instead of relying on a small model to follow the
             # schema as prose.
+            provider_response_format = _provider_response_format(
+                runtime_kwargs.get("provider"), structured_response_format
+            )
             agent_kwargs["request_overrides"] = {
                 "extra_body": {
-                    "response_format": structured_response_format,
+                    "response_format": provider_response_format,
                 }
             }
         if request_service_tier is not _REQUEST_OPTION_MISSING:
@@ -5176,7 +5220,10 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
-        async def _compute_completion():
+        async def _compute_completion(
+            agent_ref: Optional[list] = None,
+            disconnect_event: Optional[threading.Event] = None,
+        ):
             return await self._run_agent(
                 user_message=user_message,
                 conversation_history=history,
@@ -5189,6 +5236,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     and isinstance(body.get("response_format"), dict)
                     else None
                 ),
+                agent_ref=agent_ref,
+                disconnect_event=disconnect_event,
                 **agent_overrides,
                 route=route,
             )
@@ -5224,7 +5273,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
         else:
             try:
-                result, usage = await _compute_completion()
+                result, usage = await self._await_nonstreaming_completion(
+                    request, _compute_completion
+                )
+            except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError):
+                # The client has gone away and the helper already interrupted
+                # the live agent/upstream model request.  Re-raise so aiohttp
+                # closes the abandoned handler instead of attempting a JSON
+                # error response on a dead transport.
+                raise
             except Exception as e:
                 logger.error(
                     "Error running agent for chat completions: %s", e, exc_info=True
@@ -5263,10 +5320,16 @@ class APIServerAdapter(BasePlatformAdapter):
         # with OpenAI-style error envelope so SDK clients raise instead of
         # silently rendering the internal failure string as message.content.
         if not final_response and (is_failed or is_partial):
+            error_code = (
+                "response_format_unsupported"
+                if structured_instruction
+                and _is_response_format_unavailable_error(raw_err_msg)
+                else "agent_incomplete"
+            )
             err_body = _openai_error(
                 err_msg or "Agent run did not produce a response.",
                 err_type="server_error",
-                code="agent_incomplete",
+                code=error_code,
             )
             err_body["error"]["hermes"] = {
                 "completed": completed,
@@ -5319,6 +5382,65 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         return web.json_response(response_data, headers=response_headers)
+
+    async def _await_nonstreaming_completion(self, request: "web.Request", compute):
+        """Run a non-streaming turn while watching for client disconnects.
+
+        aiohttp does not cancel a non-streaming handler merely because its
+        peer closes the socket. Without this watcher, cancelling a VKC
+        analysis closes the Worker -> Gateway request, but the Gateway's
+        executor thread and llama.cpp request continue until generation ends.
+        """
+        agent_ref: list[Any] = [None]
+        disconnect_event = threading.Event()
+        agent_task = asyncio.create_task(compute(agent_ref, disconnect_event))
+
+        async def interrupt_abandoned_turn(reason: str) -> None:
+            disconnect_event.set()
+            agent = agent_ref[0]
+            if agent is not None:
+                try:
+                    request_hard_interrupt(agent, reason)
+                except Exception:
+                    logger.debug(
+                        "Failed to interrupt disconnected non-streaming agent",
+                        exc_info=True,
+                    )
+                _reap_disconnected_agent_processes(
+                    agent, source="api_server_nonstream_disconnect"
+                )
+            if not agent_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(agent_task), timeout=5.0)
+                except Exception:
+                    if not agent_task.done():
+                        agent_task.cancel()
+                        await asyncio.gather(agent_task, return_exceptions=True)
+
+        try:
+            while not agent_task.done():
+                await asyncio.wait({agent_task}, timeout=0.1)
+                if agent_task.done():
+                    break
+                transport = request.transport
+                disconnected = transport is None
+                if not disconnected:
+                    try:
+                        disconnected = transport.is_closing() is True
+                    except (AttributeError, RuntimeError):
+                        disconnected = True
+                if disconnected:
+                    await interrupt_abandoned_turn(
+                        "Non-streaming API client disconnected"
+                    )
+                    logger.info(
+                        "Non-streaming client disconnected; interrupted agent task"
+                    )
+                    raise ConnectionResetError("non-streaming client disconnected")
+            return await agent_task
+        except asyncio.CancelledError:
+            await interrupt_abandoned_turn("Non-streaming API task cancelled")
+            raise
 
     async def _write_sse_chat_completion(
         self,
@@ -7380,6 +7502,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        disconnect_event: Optional[threading.Event] = None,
         active_run_id: Optional[str] = None,
         gateway_session_key: Optional[str] = None,
         requested_model: Optional[str] = None,
@@ -7456,6 +7579,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                     if agent_ref is not None:
                         agent_ref[0] = agent
+                    if disconnect_event is not None and disconnect_event.is_set():
+                        request_hard_interrupt(
+                            agent, "Non-streaming API client disconnected"
+                        )
                     if active_run_id:
                         self._active_run_agents[active_run_id] = agent
                     effective_task_id = session_id or str(uuid.uuid4())

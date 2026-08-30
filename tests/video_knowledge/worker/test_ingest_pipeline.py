@@ -1,9 +1,11 @@
 import asyncio
+import json
 import wave
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from sqlalchemy import select
 from plugins.video_knowledge.backend.app.domain.enums import (
     JobStage,
     JobStatus,
@@ -122,6 +124,12 @@ class OfflineDownloader(FakeDownloaderWithoutSubtitles):
 
 
 class FakeFFmpeg(FFmpegAdapter):
+    async def extract_thumbnail(self, source: Path, target: Path) -> Path:
+        assert await asyncio.to_thread(source.is_file)
+        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(target.write_bytes, b"fake-jpeg-thumbnail")
+        return target
+
     async def extract_asr_audio(
         self,
         source: Path,
@@ -318,6 +326,90 @@ async def test_ingest_pipeline_falls_back_to_asr_without_subtitles(
         check_cancel=_ignore_cancel,
     )
     assert resumed.segments[0].text == "本地语音识别测试"
+    await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ingest_pipeline_copies_local_video_and_reuses_asr(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'local-pipeline.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    original = tmp_path / "meeting.mp4"
+    original.write_bytes(b"local-video-remains-owned-by-user")
+    source, pending, _media, _duplicate = await SourceService(database).ingest_local(
+        str(original),
+        title="本地会议",
+        author="本地作者",
+        asr_options={
+            "auto_analyze": True,
+            "analysis_provider": "custom:ynknife_local",
+            "analysis_model": "qwen3.5-4b",
+        },
+    )
+    state_machine = JobStateMachine(database)
+    worker_id = "local-worker"
+    job = await state_machine.claim_next(worker_id, lease_seconds=60)
+    assert job is not None
+    storage = tmp_path / "storage"
+    media_service = MediaService(database, storage)
+    transcript_service = TranscriptService(database, storage)
+    pipeline = IngestVideoPipeline(
+        state_machine,
+        media_service,
+        OfflineDownloader(),
+        FakeInspector(),
+        storage,
+        transcript_service,
+        ASRPipeline(
+            media_service,
+            transcript_service,
+            FakeFFmpeg(),
+            FakeTranscriber(),
+            storage,
+        ),
+        ASRConfig(model="small", device="cpu", compute_type="int8"),
+        2,
+        0.5,
+        thumbnail_extractor=FakeFFmpeg(),
+    )
+
+    await pipeline.run(
+        job, worker_id, LeaseHeartbeat(state_machine, job.id, worker_id, 60)
+    )
+
+    assert original.read_bytes() == b"local-video-remains-owned-by-user"
+    async with database.session() as session:
+        completed = await session.get(Job, pending.id)
+        assert completed is not None
+        assert completed.status == JobStatus.SUCCEEDED.value
+        assert completed.media_id is not None
+        analysis_job = await session.scalar(
+            select(Job).where(
+                Job.media_id == completed.media_id,
+                Job.type == JobType.ANALYZE.value,
+            )
+        )
+        assert analysis_job is not None
+        analysis_input = json.loads(analysis_job.input_json)
+        assert analysis_input["analysis_provider"] == "custom:ynknife_local"
+        assert analysis_input["analysis_model"] == "qwen3.5-4b"
+    media, assets = await media_service.get_media(completed.media_id)
+    assert media.title == "本地会议"
+    assert media.author == "本地作者"
+    assert json.loads(media.metadata_json)["local"] is True
+    video_asset = next(asset for asset in assets if asset.kind == "VIDEO")
+    thumbnail_asset = next(asset for asset in assets if asset.kind == "THUMBNAIL")
+    assert (storage / video_asset.relative_path).read_bytes() == original.read_bytes()
+    assert (
+        storage / thumbnail_asset.relative_path
+    ).read_bytes() == b"fake-jpeg-thumbnail"
+    assert media.thumbnail_url == str(storage / thumbnail_asset.relative_path)
+    transcript = await transcript_service.latest(media.id)
+    assert transcript is not None
+    assert transcript[1][0].text == "本地语音识别测试"
+    assert source.url == original.name
     await database.dispose()
 
 

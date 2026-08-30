@@ -47,7 +47,7 @@ const plugin: HermesPlugin = {
         area: SIDEBAR_NAV_AREA,
         order: 45,
         data: {
-          codicon: 'video',
+          codicon: 'file-media',
           label: ctx.i18n.t('nav'),
           path: '/video-knowledge'
         } satisfies SidebarNavContribution

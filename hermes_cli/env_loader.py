@@ -82,6 +82,16 @@ _PROFILE_MANAGED_ENV_KEYS: frozenset[str] = frozenset({
     "COPILOT_ACP_BASE_URL",
 })
 
+# Process-local control credentials injected by a trusted parent launcher.
+# These are not user configuration and must never be replaced by a stale
+# value persisted in .env or a managed/external secret source. In particular,
+# Desktop mints a fresh dashboard session token for every backend spawn and
+# immediately uses that exact value for its authenticated readiness probe.
+# Letting dotenv override it makes a healthy backend answer 401 forever.
+_PARENT_CONTROL_ENV_KEYS: frozenset[str] = frozenset({
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+})
+
 
 def _env_keys_defined_in_dotenv(path: Path) -> set[str]:
     """Return KEY names assigned in a dotenv file (including empty ``KEY=``).
@@ -203,9 +213,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
         from agent.secret_sources.registry import apply_all
 
         local_env = {
-            name: value
-            for name, value in os.environ.items()
-            if _is_global_env(name)
+            name: value for name, value in os.environ.items() if _is_global_env(name)
         }
         local_env.update(load_env_file(home / ".env"))
         # Mirror load_hermes_dotenv()'s .op.env bootstrap: the 1Password
@@ -332,7 +340,7 @@ def _sanitize_loaded_credentials() -> None:
             "  This usually means the key was copy-pasted from a PDF, "
             "rich-text editor, or web page that substituted lookalike\n"
             "  Unicode glyphs for ASCII letters. If authentication fails "
-            "(e.g. \"API key not valid\"), re-copy the key from the\n"
+            '(e.g. "API key not valid"), re-copy the key from the\n'
             "  provider's dashboard and run `hermes setup` (or edit the "
             ".env file in a plain-text editor).",
             file=sys.stderr,
@@ -448,6 +456,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original or force_utf8_rewrite:
             import tempfile
+
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
             )
@@ -485,6 +494,9 @@ def load_hermes_dotenv(
       dependencies into the process that replaces that same environment.
     """
     loaded: list[Path] = []
+    parent_control_env = {
+        key: os.environ[key] for key in _PARENT_CONTROL_ENV_KEYS if key in os.environ
+    }
 
     home_path = Path(hermes_home or os.getenv("HERMES_HOME", Path.home() / ".hermes"))
     user_env = home_path / ".env"
@@ -534,7 +546,10 @@ def load_hermes_dotenv(
     # resolution is unnecessary for the updater.
     from hermes_cli import _early_recovery
 
-    if load_external_secrets and not _early_recovery._should_skip_external_secret_sources():
+    if (
+        load_external_secrets
+        and not _early_recovery._should_skip_external_secret_sources()
+    ):
         _apply_external_secret_sources(home_path)
     _apply_managed_env()
 
@@ -551,6 +566,11 @@ def load_hermes_dotenv(
     # so the merged config (which already carries the managed overlay) is
     # what lands in the env.
     _reapply_terminal_config_bridge(home_path)
+
+    # Restore trusted launcher credentials last, after every source capable of
+    # overriding os.environ. Keys absent from the parent remain loadable from
+    # .env for backwards compatibility with standalone/non-Desktop commands.
+    os.environ.update(parent_control_env)
 
     return loaded
 
@@ -666,8 +686,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     # We whitelist by *shape* (source dict with enabled flag) rather than
     # hardcoding names, so plugin/test sources pass through unknown keys.
     any_enabled = any(
-        isinstance(v, dict) and v.get("enabled") is True
-        for v in cfg.values()
+        isinstance(v, dict) and v.get("enabled") is True for v in cfg.values()
     )
     if not any_enabled:
         return

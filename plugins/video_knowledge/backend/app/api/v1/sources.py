@@ -12,6 +12,7 @@ from plugins.video_knowledge.backend.app.schemas.media import (
     LiveSourceCreateRequest,
     LiveSourceRead,
     LiveSourceUpdateRequest,
+    LocalSourceIngestRequest,
     ProbeRead,
     SourceIngestRequest,
     SourceProbeRequest,
@@ -69,8 +70,42 @@ async def ingest_source(
         max_height=payload.max_height,
         subtitle_languages=payload.subtitle_languages,
         asr_options={
-            key: getattr(payload, key) if key in provided else defaults[key]
-            for key in defaults
+            **{
+                key: getattr(payload, key) if key in provided else defaults[key]
+                for key in defaults
+            },
+            "analysis_provider": payload.analysis_provider,
+            "analysis_model": payload.analysis_model,
+        },
+        actor=f"api:{request.state.request_id}",
+    )
+    assets: list[MediaAsset] = []
+    if media is not None:
+        _item, assets = await MediaService(
+            database, request.app.state.settings.storage_root
+        ).get_media(media.id)
+    return IngestRead.build(source, job, media, assets, duplicate)
+
+
+@router.post("/local", response_model=IngestRead, status_code=status.HTTP_201_CREATED)
+async def ingest_local_source(
+    payload: LocalSourceIngestRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> IngestRead:
+    defaults = ASRSettingsService(database, request.app.state.settings).defaults()
+    provided = payload.model_fields_set
+    source, job, media, duplicate = await SourceService(database).ingest_local(
+        payload.path,
+        title=payload.title,
+        author=payload.author,
+        asr_options={
+            **{
+                key: getattr(payload, key) if key in provided else defaults[key]
+                for key in defaults
+            },
+            "analysis_provider": payload.analysis_provider,
+            "analysis_model": payload.analysis_model,
         },
         actor=f"api:{request.state.request_id}",
     )

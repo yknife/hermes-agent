@@ -46,6 +46,11 @@ class InvalidSourceUrlError(DomainError):
     code = "INVALID_SOURCE_URL"
 
 
+class InvalidLocalMediaError(DomainError):
+    code = "INVALID_LOCAL_MEDIA"
+    retryable = False
+
+
 class TranscriptNotFoundError(DomainError):
     code = "TRANSCRIPT_NOT_FOUND"
 

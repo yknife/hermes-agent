@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Job,
@@ -18,7 +18,20 @@ class SourceProbeRequest(BaseModel):
     url: HttpUrl
 
 
-class SourceIngestRequest(BaseModel):
+class AnalysisSelection(BaseModel):
+    analysis_provider: str | None = Field(default=None, min_length=1, max_length=200)
+    analysis_model: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_analysis_selection(self) -> "AnalysisSelection":
+        if bool(self.analysis_provider) != bool(self.analysis_model):
+            raise ValueError(
+                "analysis_provider and analysis_model must be provided together"
+            )
+        return self
+
+
+class SourceIngestRequest(AnalysisSelection):
     url: HttpUrl
     max_height: int = Field(default=1080, ge=144, le=4320)
     subtitle_languages: list[str] = Field(default_factory=lambda: ["zh-CN", "zh", "en"])
@@ -32,7 +45,21 @@ class SourceIngestRequest(BaseModel):
     auto_analyze: bool = True
 
 
-class LiveSourceCreateRequest(BaseModel):
+class LocalSourceIngestRequest(AnalysisSelection):
+    path: str = Field(min_length=1, max_length=32767)
+    title: str = Field(min_length=1, max_length=500)
+    author: str | None = Field(default=None, max_length=500)
+    asr_enabled: bool = True
+    asr_model: str = Field(default="small", min_length=1, max_length=100)
+    asr_device: Literal["auto", "cpu", "cuda"] = "auto"
+    asr_compute_type: str = Field(default="auto", min_length=1, max_length=64)
+    asr_language: str | None = Field(default=None, max_length=32)
+    asr_vad_filter: bool = True
+    asr_word_timestamps: bool = False
+    auto_analyze: bool = True
+
+
+class LiveSourceCreateRequest(AnalysisSelection):
     url: HttpUrl
     poll_interval_seconds: int = Field(default=120, ge=30, le=3600)
     quality_policy: Literal["OD", "UHD", "HD", "SD", "LD"] = "OD"

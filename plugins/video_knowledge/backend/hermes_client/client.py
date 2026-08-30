@@ -38,6 +38,8 @@ class HermesClientProtocol(Protocol):
         user_prompt: str,
         schema_name: str,
         schema: Mapping[str, Any],
+        model: str | None = None,
+        provider: str | None = None,
     ) -> dict[str, Any]: ...
 
 
@@ -81,11 +83,15 @@ class HermesClient:
         user_prompt: str,
         schema_name: str,
         schema: Mapping[str, Any],
+        model: str | None = None,
+        provider: str | None = None,
     ) -> dict[str, Any]:
+        selected_model = model.strip() if model and model.strip() else self.model
+        selected_provider = provider.strip() if provider and provider.strip() else None
         if self.api_mode == "responses":
             path = "/responses"
             payload: dict[str, Any] = {
-                "model": self.model,
+                "model": selected_model,
                 "instructions": system_prompt,
                 "input": user_prompt,
                 "max_output_tokens": self.max_output_tokens,
@@ -101,7 +107,7 @@ class HermesClient:
         else:
             path = "/chat/completions"
             payload = {
-                "model": self.model,
+                "model": selected_model,
                 "max_tokens": self.max_output_tokens,
                 "model_options": {
                     "structured_mode": True,
@@ -121,9 +127,13 @@ class HermesClient:
                     },
                 },
             }
+        if selected_provider is not None:
+            payload["provider"] = selected_provider
 
         response: httpx.Response | None = None
-        for attempt in range(self.max_retries + 1):
+        retry_attempt = 0
+        response_format_fallback_used = False
+        while True:
             try:
                 response = await self._client.post(
                     f"{self.base_url}{path}", json=payload
@@ -135,6 +145,26 @@ class HermesClient:
                 httpx.NetworkError,
                 httpx.HTTPStatusError,
             ) as exc:
+                if (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and self.api_mode == "chat_completions"
+                    and not response_format_fallback_used
+                    and self._response_format_is_unsupported(exc.response)
+                ):
+                    # Some OpenAI-compatible providers expose a model in the
+                    # catalog even though that model rejects json_schema while
+                    # still supporting json_object. Keep provider-enforced JSON
+                    # syntax and Hermes structured mode, but move the detailed
+                    # schema into the trusted system message for one
+                    # compatibility retry. KnowledgeService still performs
+                    # strict Pydantic and citation validation afterward.
+                    payload = self._schema_prompt_fallback(
+                        payload,
+                        schema_name=schema_name,
+                        schema=schema,
+                    )
+                    response_format_fallback_used = True
+                    continue
                 retryable = not isinstance(
                     exc, httpx.HTTPStatusError
                 ) or exc.response.status_code in {
@@ -146,7 +176,7 @@ class HermesClient:
                     503,
                     504,
                 }
-                if attempt >= self.max_retries or not retryable:
+                if retry_attempt >= self.max_retries or not retryable:
                     detail = type(exc).__name__
                     if isinstance(exc, httpx.HTTPStatusError):
                         detail = f"HTTP {exc.response.status_code}"
@@ -154,7 +184,8 @@ class HermesClient:
                         f"Hermes request failed: {detail}",
                         retryable=retryable,
                     ) from exc
-                await asyncio.sleep(min(0.5 * (2**attempt), 4.0))
+                await asyncio.sleep(min(0.5 * (2**retry_attempt), 4.0))
+                retry_attempt += 1
 
         if response is None:
             raise HermesClientError("Hermes request did not return a response")
@@ -171,6 +202,73 @@ class HermesClient:
                 "Hermes JSON response must be an object", retryable=False
             )
         return value
+
+    @staticmethod
+    def _response_format_is_unsupported(response: httpx.Response) -> bool:
+        """Recognize only an explicit provider capability rejection.
+
+        Hermes Gateway wraps an upstream provider's 400 as a 502, so the
+        status code alone cannot distinguish this from a transient outage.
+        The response body is inspected locally but is never included in a
+        raised exception or log message.
+        """
+
+        try:
+            body = response.json()
+            error = body.get("error") if isinstance(body, dict) else None
+            if (
+                isinstance(error, dict)
+                and error.get("code") == "response_format_unsupported"
+            ):
+                return True
+        except (json.JSONDecodeError, UnicodeDecodeError, RuntimeError):
+            pass
+        try:
+            detail = response.text.casefold()
+        except (UnicodeDecodeError, RuntimeError):
+            return False
+        if "response_format" not in detail and "response format" not in detail:
+            return False
+        return any(
+            marker in detail
+            for marker in (
+                "unavailable",
+                "unsupported",
+                "not supported",
+                "does not support",
+            )
+        )
+
+    @staticmethod
+    def _schema_prompt_fallback(
+        payload: Mapping[str, Any],
+        *,
+        schema_name: str,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        fallback = dict(payload)
+        fallback["response_format"] = {"type": "json_object"}
+        messages = [dict(item) for item in payload.get("messages", [])]
+        schema_instruction = (
+            "\n\nThe selected provider cannot enforce response_format. "
+            "You must still return only one JSON object that conforms to the "
+            f"JSON Schema named {schema_name!r}:\n"
+            + json.dumps(
+                dict(schema),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        if messages and messages[0].get("role") == "system":
+            messages[0]["content"] = (
+                str(messages[0].get("content", "")) + schema_instruction
+            )
+        else:
+            messages.insert(
+                0, {"role": "system", "content": schema_instruction.lstrip()}
+            )
+        fallback["messages"] = messages
+        return fallback
 
     def _response_text(self, body: Mapping[str, Any]) -> str:
         if self.api_mode == "responses":

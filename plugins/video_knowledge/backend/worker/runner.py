@@ -90,6 +90,7 @@ class WorkerRunner:
             ),
             self.settings.asr_chunk_seconds,
             self.settings.asr_overlap_seconds,
+            thumbnail_extractor=self.thumbnail_extractor,
             cookies_file=self.settings.yt_dlp_cookies_file,
             proxy=self.settings.download_proxy,
         )
@@ -119,6 +120,7 @@ class WorkerRunner:
                 self.hermes_client,
                 prompt_version=self.settings.analysis_prompt_version,
                 chunk_characters=self.settings.analysis_chunk_characters,
+                max_chunk_segments=self.settings.analysis_max_chunk_segments,
                 structured_attempts=self.settings.analysis_structured_attempts,
             ),
         )
@@ -126,12 +128,12 @@ class WorkerRunner:
     async def run(self) -> None:
         logger.info("worker_started", extra={"worker_id": self.worker_id})
         try:
-            generated, failed = await self.media_service.backfill_live_thumbnails(
+            generated, failed = await self.media_service.backfill_missing_thumbnails(
                 self.thumbnail_extractor
             )
             if generated or failed:
                 logger.info(
-                    "live_thumbnail_backfill_finished",
+                    "media_thumbnail_backfill_finished",
                     extra={"generated": generated, "failed": failed},
                 )
             while True:

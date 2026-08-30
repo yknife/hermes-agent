@@ -21,6 +21,7 @@ from plugins.video_knowledge.backend.app.domain.enums import (
     SourceType,
 )
 from plugins.video_knowledge.backend.app.domain.errors import (
+    InvalidLocalMediaError,
     InvalidSourceUrlError,
     MediaDeleteConflictError,
     MediaDeleteStorageError,
@@ -49,6 +50,19 @@ from plugins.video_knowledge.backend.media_adapters.models import (
 )
 
 TRACKING_PARAMS = {"fbclid", "gclid", "si", "spm_id_from", "feature"}
+LOCAL_VIDEO_EXTENSIONS = {
+    ".avi",
+    ".flv",
+    ".m4v",
+    ".mkv",
+    ".mov",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".ts",
+    ".webm",
+    ".wmv",
+}
 MEDIA_DELETE_ACTIVE_STATUSES = {
     JobStatus.PENDING.value,
     JobStatus.RUNNING.value,
@@ -129,6 +143,35 @@ def classify_source_type(url: str, platform: str) -> SourceType:
     if platform == "youtube" and (path == "/live" or path.endswith("/live")):
         return SourceType.LIVE
     return SourceType.VIDEO
+
+
+def resolve_local_video_path(raw_path: str) -> Path:
+    value = raw_path.strip()
+    if not value or "\0" in value:
+        raise InvalidLocalMediaError("请选择有效的本地视频文件")
+    try:
+        path = Path(value).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise InvalidLocalMediaError("本地视频文件不存在或无法访问") from exc
+    if not path.is_file():
+        raise InvalidLocalMediaError("本地视频路径不是文件")
+    if path.suffix.lower() not in LOCAL_VIDEO_EXTENSIONS:
+        raise InvalidLocalMediaError(
+            "不支持该本地视频格式",
+            details={"extension": path.suffix.lower() or None},
+        )
+    try:
+        if path.stat().st_size <= 0:
+            raise InvalidLocalMediaError("本地视频文件为空")
+    except OSError as exc:
+        raise InvalidLocalMediaError("无法读取本地视频文件") from exc
+    return path
+
+
+def _local_source_key(path: Path) -> str:
+    stat = path.stat()
+    identity = f"{os.path.normcase(str(path))}\0{stat.st_size}\0{stat.st_mtime_ns}"
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 class SourceService:
@@ -230,6 +273,88 @@ class SourceService:
         )
         return source, job, None, False
 
+    async def ingest_local(
+        self,
+        local_path: str,
+        *,
+        title: str,
+        author: str | None = None,
+        asr_options: dict[str, object] | None = None,
+        actor: str = "api",
+    ) -> tuple[Source, Job, MediaItem | None, bool]:
+        path = await asyncio.to_thread(resolve_local_video_path, local_path)
+        source_key = await asyncio.to_thread(_local_source_key, path)
+        canonical = f"local://{source_key}"
+        display_title = title.strip()
+        display_author = author.strip() if author and author.strip() else None
+        if not display_title:
+            raise InvalidLocalMediaError("请输入视频标题")
+        input_data = {
+            "url": path.name,
+            "source_kind": "local",
+            "local_path": str(path),
+            "local_source_key": source_key,
+            "title": display_title,
+            "author": display_author,
+            **(asr_options or {}),
+        }
+        async with self.database.session() as session:
+            existing = await session.scalar(
+                select(Source).where(
+                    Source.type == SourceType.VIDEO.value,
+                    Source.canonical_url == canonical,
+                    Source.deleted_at.is_(None),
+                )
+            )
+            if existing is not None:
+                media = await session.scalar(
+                    select(MediaItem)
+                    .where(MediaItem.source_id == existing.id)
+                    .order_by(MediaItem.created_at.desc())
+                    .limit(1)
+                )
+                job = await session.scalar(
+                    select(Job)
+                    .where(
+                        Job.source_id == existing.id,
+                        Job.type == JobType.INGEST_VIDEO.value,
+                    )
+                    .order_by(Job.created_at.desc())
+                    .limit(1)
+                )
+                if job is None:
+                    job = await JobStateMachine(self.database).create(
+                        job_type=JobType.INGEST_VIDEO,
+                        input_data=input_data,
+                        source_id=existing.id,
+                        media_id=media.id if media is not None else None,
+                        actor=actor,
+                    )
+                return existing, job, media, True
+
+        source = Source(
+            id=new_id("src"),
+            type=SourceType.VIDEO.value,
+            platform="local",
+            url=path.name,
+            canonical_url=canonical,
+            external_id=source_key,
+            title=display_title,
+            enabled=True,
+            config_json=json.dumps(
+                {"local": True, "filename": path.name}, ensure_ascii=False
+            ),
+        )
+        async with self.database.session() as session, session.begin():
+            session.add(source)
+        job = await JobStateMachine(self.database).create(
+            job_type=JobType.INGEST_VIDEO,
+            input_data=input_data,
+            source_id=source.id,
+            actor=actor,
+        )
+        return source, job, None, False
+
     async def list_sources(self, limit: int = 100) -> list[Source]:
         async with self.database.session() as session:
             return list(
@@ -274,6 +399,8 @@ class MediaService:
         probe: MediaProbe,
         download: DownloadResult,
         info: MediaFileInfo,
+        *,
+        thumbnail_path: Path | None = None,
     ) -> MediaItem:
         media_id = new_id("media")
         target_dir = (self.storage_root / "media" / media_id / "source").resolve()
@@ -286,6 +413,12 @@ class MediaService:
         if download.info_json_path is not None and download.info_json_path.is_file():
             info_target = target_dir / "info.json"
             os.replace(download.info_json_path, info_target)
+        thumbnail_target: Path | None = None
+        if thumbnail_path is not None and await asyncio.to_thread(
+            thumbnail_path.is_file
+        ):
+            thumbnail_target = target_dir / "thumbnail.jpg"
+            os.replace(thumbnail_path, thumbnail_target)
         media = MediaItem(
             id=media_id,
             source_id=source_id,
@@ -294,7 +427,11 @@ class MediaService:
             author=probe.author,
             description=probe.description,
             webpage_url=probe.webpage_url,
-            thumbnail_url=probe.thumbnail_url,
+            thumbnail_url=(
+                str(thumbnail_target)
+                if thumbnail_target is not None
+                else probe.thumbnail_url
+            ),
             duration_seconds=info.duration_seconds,
             published_at=_parse_upload_date(probe.upload_date),
             metadata_json=json.dumps(probe.metadata, ensure_ascii=False),
@@ -308,6 +445,16 @@ class MediaService:
             assets.append(
                 await asyncio.to_thread(
                     self._asset, media_id, MediaAssetKind.INFO_JSON, info_target, None
+                )
+            )
+        if thumbnail_target is not None:
+            assets.append(
+                await asyncio.to_thread(
+                    self._asset,
+                    media_id,
+                    MediaAssetKind.THUMBNAIL,
+                    thumbnail_target,
+                    None,
                 )
             )
         async with self.database.session() as session, session.begin():
@@ -413,18 +560,19 @@ class MediaService:
                 job.media_id = media_id
         return media
 
-    async def backfill_live_thumbnails(
+    async def backfill_missing_thumbnails(
         self, extractor: ThumbnailExtractor
     ) -> tuple[int, int]:
-        """Create thumbnails for legacy live media without modifying source video."""
+        """Create thumbnails for legacy live/local media without modifying video."""
         generated = 0
         failed = 0
         for media, assets in await self.list_media(limit=10_000):
             try:
-                is_live = bool(json.loads(media.metadata_json).get("live"))
+                metadata = json.loads(media.metadata_json)
+                eligible = bool(metadata.get("live") or metadata.get("local"))
             except (TypeError, ValueError):
-                is_live = False
-            if media.thumbnail_url or not is_live:
+                eligible = False
+            if media.thumbnail_url or not eligible:
                 continue
             video = next(
                 (asset for asset in assets if asset.kind == MediaAssetKind.VIDEO.value),
@@ -463,7 +611,7 @@ class MediaService:
                 failed += 1
                 await asyncio.to_thread(pending_path.unlink, missing_ok=True)
                 logger.warning(
-                    "live_thumbnail_backfill_failed",
+                    "media_thumbnail_backfill_failed",
                     extra={"media_id": media.id},
                     exc_info=True,
                 )

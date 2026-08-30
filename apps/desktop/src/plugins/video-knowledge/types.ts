@@ -64,6 +64,8 @@ export interface AsrOptions {
   asr_language: null | string
   asr_vad_filter: boolean
   asr_word_timestamps: boolean
+  analysis_provider?: null | string
+  analysis_model?: null | string
 }
 
 export interface Job {
@@ -262,4 +264,8 @@ export interface IngestOptions extends AsrOptions {
   auto_analyze: boolean
   max_height: number
   subtitle_languages: string[]
+}
+
+export interface LocalIngestOptions extends AsrOptions {
+  auto_analyze: boolean
 }

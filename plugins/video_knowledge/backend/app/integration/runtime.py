@@ -84,6 +84,9 @@ class WorkerSupervisor:
             "VKC_ASR_CHUNK_SECONDS": str(self.settings.asr_chunk_seconds),
             "VKC_ASR_OVERLAP_SECONDS": str(self.settings.asr_overlap_seconds),
             "VKC_AUTO_ANALYZE": str(self.settings.auto_analyze).lower(),
+            "VKC_ANALYSIS_MAX_CHUNK_SEGMENTS": str(
+                self.settings.analysis_max_chunk_segments
+            ),
         })
         if self.settings.asr_language:
             environment["VKC_ASR_LANGUAGE"] = self.settings.asr_language

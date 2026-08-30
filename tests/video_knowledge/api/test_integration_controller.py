@@ -72,7 +72,12 @@ async def test_controller_runs_without_a_separate_http_service(
     ingest = await controller.dispatch(
         "POST",
         "/sources/ingest",
-        payload={"url": "https://example.test/video", "auto_analyze": True},
+        payload={
+            "url": "https://example.test/video",
+            "auto_analyze": True,
+            "analysis_provider": "custom:ynknife_local",
+            "analysis_model": "qwen3.5-4b",
+        },
     )
     live = await controller.dispatch(
         "POST",
@@ -127,10 +132,24 @@ async def test_controller_runs_without_a_separate_http_service(
     playback_path = Path(playback.body["path"])
     playback_bytes = await asyncio.to_thread(playback_path.read_bytes)
     deleted = await controller.dispatch("DELETE", f"/media/{media.id}")
+    local_video = tmp_path / "local.mp4"
+    await asyncio.to_thread(local_video.write_bytes, b"local")
+    local_ingest = await controller.dispatch(
+        "POST",
+        "/sources/local",
+        payload={
+            "path": str(local_video),
+            "title": "本地视频",
+            "author": "本地作者",
+            "auto_analyze": False,
+        },
+    )
 
     assert health.body["components"]["database"]["status"] == "ok"
     assert ingest.status == 201
     assert ingest.body["job"]["input"]["auto_analyze"] is True
+    assert ingest.body["job"]["input"]["analysis_provider"] == "custom:ynknife_local"
+    assert ingest.body["job"]["input"]["analysis_model"] == "qwen3.5-4b"
     assert len(jobs.body["items"]) == 2
     assert live.status == 201
     assert live.body["source"]["platform"] == "bilibili"
@@ -152,4 +171,7 @@ async def test_controller_runs_without_a_separate_http_service(
     assert deleted.body["media_id"] == media.id
     assert deleted.body["deleted_asset_count"] == 1
     assert not await asyncio.to_thread(playback_path.exists)
+    assert local_ingest.status == 201
+    assert local_ingest.body["source"]["platform"] == "local"
+    assert local_ingest.body["job"]["input"]["source_kind"] == "local"
     await runtime.stop()

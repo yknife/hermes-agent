@@ -114,6 +114,14 @@ export interface PluginProfileRoute {
   targetProfile: string
 }
 
+export interface PluginSelectPathsOptions {
+  defaultPath?: string
+  directories?: boolean
+  filters?: Array<{ extensions: string[]; name: string }>
+  multiple?: boolean
+  title?: string
+}
+
 /** Window geometry + the app's responsive posture, one readonly rect. */
 export interface ViewportRect {
   width: number
@@ -346,6 +354,18 @@ export const host = {
 
   /** Tail an app log file (`agent` / `errors` / `gateway` / `gui` / …). */
   logs: async (...args: Parameters<typeof getLogs>) => getLogs(...args),
+
+  /** Open the native Desktop file picker. Plugins receive paths only after an
+   *  explicit user selection; browser-only hosts reject with a clear error. */
+  selectPaths: async (options?: PluginSelectPathsOptions): Promise<string[]> => {
+    const picker = window.hermesDesktop?.selectPaths
+
+    if (!picker) {
+      throw new Error('This host cannot select local files. Open the plugin in Hermes Desktop.')
+    }
+
+    return picker(options)
+  },
 
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {

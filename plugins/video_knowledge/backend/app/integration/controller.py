@@ -29,6 +29,7 @@ from plugins.video_knowledge.backend.app.schemas.media import (
     LiveSourceCreateRequest,
     LiveSourceRead,
     LiveSourceUpdateRequest,
+    LocalSourceIngestRequest,
     MediaDeleteRead,
     MediaRead,
     ProbeRead,
@@ -210,6 +211,39 @@ class VideoKnowledgeController:
                     "asr_vad_filter": ingest_request.asr_vad_filter,
                     "asr_word_timestamps": ingest_request.asr_word_timestamps,
                     "auto_analyze": ingest_request.auto_analyze,
+                    "analysis_provider": ingest_request.analysis_provider,
+                    "analysis_model": ingest_request.analysis_model,
+                },
+                actor=actor,
+            )
+            assets: list[MediaAsset] = []
+            if media is not None:
+                _media, assets = await self._media(database).get_media(media.id)
+            return self._json(
+                IngestRead.build(source, job, media, assets, duplicate),
+                status=201,
+            )
+        if parts == ["sources", "local"] and method == "POST":
+            defaults = ASRSettingsService(database, self.runtime.settings).defaults()
+            ingest_request = LocalSourceIngestRequest.model_validate({
+                **defaults,
+                **payload,
+            })
+            source, job, media, duplicate = await SourceService(database).ingest_local(
+                ingest_request.path,
+                title=ingest_request.title,
+                author=ingest_request.author,
+                asr_options={
+                    "asr_enabled": ingest_request.asr_enabled,
+                    "asr_model": ingest_request.asr_model,
+                    "asr_device": ingest_request.asr_device,
+                    "asr_compute_type": ingest_request.asr_compute_type,
+                    "asr_language": ingest_request.asr_language,
+                    "asr_vad_filter": ingest_request.asr_vad_filter,
+                    "asr_word_timestamps": ingest_request.asr_word_timestamps,
+                    "auto_analyze": ingest_request.auto_analyze,
+                    "analysis_provider": ingest_request.analysis_provider,
+                    "analysis_model": ingest_request.analysis_model,
                 },
                 actor=actor,
             )
@@ -347,7 +381,11 @@ class VideoKnowledgeController:
         if len(parts) == 3 and parts[0] == "media" and parts[2] == "analyze":
             analyze_request = AnalyzeRequest.model_validate(payload)
             job = await self._knowledge(database, client).queue_analysis(
-                parts[1], force=analyze_request.force, actor=actor
+                parts[1],
+                force=analyze_request.force,
+                analysis_provider=analyze_request.analysis_provider,
+                analysis_model=analyze_request.analysis_model,
+                actor=actor,
             )
             return self._json(JobRead.from_orm_job(job), status=201)
         if parts == ["search"] and method == "GET":
@@ -414,6 +452,8 @@ class VideoKnowledgeController:
             client,
             prompt_version=settings.analysis_prompt_version,
             chunk_characters=settings.analysis_chunk_characters,
+            max_chunk_segments=settings.analysis_max_chunk_segments,
+            structured_attempts=settings.analysis_structured_attempts,
         )
 
     @staticmethod

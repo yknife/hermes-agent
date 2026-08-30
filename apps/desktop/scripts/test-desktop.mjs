@@ -305,7 +305,8 @@ function validateBundle() {
     )
   }
 
-  // Positive assertion: install-stamp.json carries a sane commit + branch
+  // Positive assertion: install-stamp.json matches the runtime schema and
+  // carries the fork-aware bootstrap identity.
   const stampPath = path.join(APP.resourcesPath, 'install-stamp.json')
   if (!exists(stampPath)) {
     die(`Missing install-stamp.json (required for first-launch bootstrap pinning): ${stampPath}`)
@@ -321,6 +322,12 @@ function validateBundle() {
   }
   if (!stamp.branch || typeof stamp.branch !== 'string') {
     die(`install-stamp.json is missing the branch field: ${JSON.stringify(stamp)}`)
+  }
+  if (stamp.schemaVersion !== 2) {
+    die(`install-stamp.json has an unsupported schema version: ${JSON.stringify(stamp)}`)
+  }
+  if (!stamp.repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(stamp.repository)) {
+    die(`install-stamp.json is missing a usable repository field: ${JSON.stringify(stamp)}`)
   }
 
   // Positive assertion: node-pty native deps shipped

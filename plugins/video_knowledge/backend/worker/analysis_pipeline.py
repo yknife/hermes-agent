@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from plugins.video_knowledge.backend.app.domain.enums import JobStage
@@ -11,6 +12,8 @@ from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
 
 
 class AnalysisPipeline:
+    CONTROL_POLL_SECONDS = 0.1
+
     def __init__(
         self, state_machine: JobStateMachine, knowledge_service: KnowledgeService
     ) -> None:
@@ -44,11 +47,51 @@ class AnalysisPipeline:
                 message=f"Hermes analysis progress {completed}/{total}",
             )
 
-        documents = await self.knowledge_service.analyze(
-            media_id,
-            force=bool(payload.get("force", False)),
-            progress_callback=report_progress,
+        analysis_task = asyncio.create_task(
+            self.knowledge_service.analyze(
+                media_id,
+                force=bool(payload.get("force", False)),
+                analysis_provider=(
+                    str(payload["analysis_provider"])
+                    if payload.get("analysis_provider")
+                    else None
+                ),
+                analysis_model=(
+                    str(payload["analysis_model"])
+                    if payload.get("analysis_model")
+                    else None
+                ),
+                progress_callback=report_progress,
+            )
         )
+        control_task = asyncio.create_task(
+            self._wait_for_control_request(job.id, worker_id, heartbeat)
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {analysis_task, control_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if control_task in done:
+                cancel_requested = control_task.result()
+                analysis_task.cancel()
+                await asyncio.gather(analysis_task, return_exceptions=True)
+                if cancel_requested:
+                    await self.state_machine.finish_cancelled(job.id, worker_id)
+                    return
+                raise JobLeaseLostError("分析任务已暂停或租约已丢失")
+            documents = analysis_task.result()
+        finally:
+            if not analysis_task.done():
+                analysis_task.cancel()
+                await asyncio.gather(analysis_task, return_exceptions=True)
+            if not control_task.done():
+                control_task.cancel()
+            await asyncio.gather(control_task, return_exceptions=True)
+
+        if await self.state_machine.is_cancel_requested(job.id, worker_id):
+            await self.state_machine.finish_cancelled(job.id, worker_id)
+            return
         if heartbeat.lost.is_set():
             raise JobLeaseLostError("分析完成前任务租约已丢失")
         await self.state_machine.update_progress(
@@ -66,3 +109,16 @@ class AnalysisPipeline:
                 "knowledge_document_ids": [item.id for item in documents],
             },
         )
+
+    async def _wait_for_control_request(
+        self, job_id: str, worker_id: str, heartbeat: LeaseHeartbeat
+    ) -> bool:
+        """Return True for cancellation; False when pause/lost lease stops work."""
+        while not heartbeat.lost.is_set():
+            try:
+                if await self.state_machine.is_cancel_requested(job_id, worker_id):
+                    return True
+            except JobLeaseLostError:
+                return False
+            await asyncio.sleep(self.CONTROL_POLL_SECONDS)
+        return False

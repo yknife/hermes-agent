@@ -1,5 +1,7 @@
 import asyncio
 import json
+import shutil
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 from plugins.video_knowledge.backend.app.domain.enums import (
@@ -7,14 +9,22 @@ from plugins.video_knowledge.backend.app.domain.enums import (
     JobType,
     MediaAssetKind,
 )
-from plugins.video_knowledge.backend.app.domain.errors import JobLeaseLostError
+from plugins.video_knowledge.backend.app.domain.errors import (
+    InvalidLocalMediaError,
+    JobLeaseLostError,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Job, MediaAsset
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
-from plugins.video_knowledge.backend.app.services.media_service import MediaService
+from plugins.video_knowledge.backend.app.services.media_service import (
+    MediaService,
+    ThumbnailExtractor,
+    resolve_local_video_path,
+)
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
 )
 from plugins.video_knowledge.backend.media_adapters import (
+    DownloadResult,
     FFprobeAdapter,
     MediaProbe,
     YtDlpAdapter,
@@ -93,6 +103,7 @@ class IngestVideoPipeline:
         asr_chunk_seconds: int,
         asr_overlap_seconds: float,
         *,
+        thumbnail_extractor: ThumbnailExtractor | None = None,
         cookies_file: Path | None = None,
         proxy: str | None = None,
     ) -> None:
@@ -100,13 +111,14 @@ class IngestVideoPipeline:
         self.media_service = media_service
         self.downloader = downloader
         self.inspector = inspector
-        self.storage_root = storage_root
+        self.storage_root = storage_root.resolve()
         self.transcript_service = transcript_service
         self.asr_pipeline = asr_pipeline
         self.asr_default_config = asr_default_config
         self.asr_chunk_seconds = asr_chunk_seconds
         self.asr_overlap_seconds = asr_overlap_seconds
         self.transcript_normalizer = TranscriptNormalizer()
+        self.thumbnail_extractor = thumbnail_extractor
         self.cookies_file = cookies_file
         self.proxy = proxy
 
@@ -115,6 +127,7 @@ class IngestVideoPipeline:
             raise ValueError("摄取任务缺少 source_id")
         payload = json.loads(job.input_json)
         url = str(payload["url"])
+        is_local = payload.get("source_kind") == "local"
 
         # Automatic retries keep the previously reported progress. Replaying the
         # deterministic pipeline must therefore never emit an earlier percentage.
@@ -161,57 +174,103 @@ class IngestVideoPipeline:
                 duration_seconds=resumed_media.duration_seconds,
             )
         else:
-            await report_progress(JobStage.PROBING, 5, "正在探测视频元数据")
-            probe = await self.downloader.probe(
-                url, cookies_file=self.cookies_file, proxy=self.proxy
-            )
-            if probe.is_live:
-                raise ValueError("直播地址请使用直播采集任务")
+            if is_local:
+                source_path = await asyncio.to_thread(
+                    resolve_local_video_path, str(payload.get("local_path", ""))
+                )
+                await report_progress(JobStage.PROBING, 5, "正在读取本地视频")
+                probe = MediaProbe(
+                    external_id=str(
+                        payload.get("local_source_key") or source_path.name
+                    ),
+                    title=str(payload.get("title") or source_path.stem),
+                    webpage_url="",
+                    platform="local",
+                    author=(str(payload["author"]) if payload.get("author") else None),
+                    metadata={
+                        "local": True,
+                        "original_filename": source_path.name,
+                    },
+                )
+            else:
+                await report_progress(JobStage.PROBING, 5, "正在探测视频元数据")
+                probe = await self.downloader.probe(
+                    url, cookies_file=self.cookies_file, proxy=self.proxy
+                )
+                if probe.is_live:
+                    raise ValueError("直播地址请使用直播采集任务")
             await self.media_service.update_source_probe(job.source_id, probe)
         temp_dir = self.storage_root / "temp" / job.id
         if job.media_id is None:
             await self._check_cancel(job.id, worker_id, heartbeat)
-            await report_progress(JobStage.ACQUIRING_MEDIA, 10, "开始下载媒体")
             last_progress = 10.0
-
-            async def progress(value: object) -> None:
-                nonlocal last_progress
-                ratio = getattr(value, "ratio", None)
-                current = max(
-                    last_progress, 10 + (float(ratio) * 65 if ratio is not None else 0)
+            if is_local:
+                source_path = await asyncio.to_thread(
+                    resolve_local_video_path, str(payload.get("local_path", ""))
                 )
-                if current - last_progress >= 1:
-                    last_progress = current
-                    await report_progress(
-                        JobStage.ACQUIRING_MEDIA, current, "正在下载媒体"
-                    )
-
-            download_task = asyncio.create_task(
-                self.downloader.download(
-                    url,
+                await report_progress(JobStage.ACQUIRING_MEDIA, 10, "开始导入本地视频")
+                download = await self._copy_local_media(
+                    source_path,
                     temp_dir,
-                    max_height=int(payload.get("max_height", 1080)),
-                    cookies_file=self.cookies_file,
-                    proxy=self.proxy,
-                    on_progress=progress,
+                    job.id,
+                    worker_id,
+                    heartbeat,
+                    report_progress,
                 )
-            )
-            while not download_task.done():
-                await asyncio.sleep(0.25)
-                try:
-                    await self._check_cancel(job.id, worker_id, heartbeat)
-                except asyncio.CancelledError:
-                    download_task.cancel()
-                    await asyncio.gather(download_task, return_exceptions=True)
-                    return
-            download = await download_task
+                last_progress = 75.0
+            else:
+                await report_progress(JobStage.ACQUIRING_MEDIA, 10, "开始下载媒体")
+
+                async def progress(value: object) -> None:
+                    nonlocal last_progress
+                    ratio = getattr(value, "ratio", None)
+                    current = max(
+                        last_progress,
+                        10 + (float(ratio) * 65 if ratio is not None else 0),
+                    )
+                    if current - last_progress >= 1:
+                        last_progress = current
+                        await report_progress(
+                            JobStage.ACQUIRING_MEDIA, current, "正在下载媒体"
+                        )
+
+                download_task = asyncio.create_task(
+                    self.downloader.download(
+                        url,
+                        temp_dir,
+                        max_height=int(payload.get("max_height", 1080)),
+                        cookies_file=self.cookies_file,
+                        proxy=self.proxy,
+                        on_progress=progress,
+                    )
+                )
+                while not download_task.done():
+                    await asyncio.sleep(0.25)
+                    try:
+                        await self._check_cancel(job.id, worker_id, heartbeat)
+                    except asyncio.CancelledError:
+                        download_task.cancel()
+                        await asyncio.gather(download_task, return_exceptions=True)
+                        return
+                download = await download_task
             await report_progress(
                 JobStage.VERIFYING_MEDIA, max(80, last_progress), "正在校验媒体完整性"
             )
             info = await self.inspector.inspect(download.media_path)
             await self._check_cancel(job.id, worker_id, heartbeat)
+            thumbnail_path: Path | None = None
+            if is_local and self.thumbnail_extractor is not None:
+                thumbnail_path = temp_dir / "thumbnail.jpg"
+                await self.thumbnail_extractor.extract_thumbnail(
+                    download.media_path, thumbnail_path
+                )
+                await self._check_cancel(job.id, worker_id, heartbeat)
             media = await self.media_service.register(
-                job.source_id, probe, download, info
+                job.source_id,
+                probe,
+                download,
+                info,
+                thumbnail_path=thumbnail_path,
             )
         else:
             if resumed_media is None:
@@ -225,7 +284,11 @@ class IngestVideoPipeline:
             str(value)
             for value in payload.get("subtitle_languages", ["zh-CN", "zh", "en"])
         ]
-        track = self.downloader.select_subtitle(probe, preferred_languages)
+        track = (
+            None
+            if is_local
+            else self.downloader.select_subtitle(probe, preferred_languages)
+        )
         if track is not None:
             subtitle = await self.downloader.download_subtitle(
                 url,
@@ -337,6 +400,8 @@ class IngestVideoPipeline:
                     "media_id": media.id,
                     "transcript_id": transcript.id,
                     "force": False,
+                    "analysis_provider": payload.get("analysis_provider"),
+                    "analysis_model": payload.get("analysis_model"),
                 },
                 source_id=job.source_id,
                 media_id=media.id,
@@ -355,6 +420,46 @@ class IngestVideoPipeline:
                 "analysis_job_id": analysis_job_id,
             },
         )
+
+    async def _copy_local_media(
+        self,
+        source: Path,
+        target_dir: Path,
+        job_id: str,
+        worker_id: str,
+        heartbeat: LeaseHeartbeat,
+        report_progress: Callable[[JobStage, float, str], Awaitable[None]],
+    ) -> DownloadResult:
+        resolved_target_dir = await asyncio.to_thread(target_dir.resolve)
+        if self.storage_root not in resolved_target_dir.parents:
+            raise InvalidLocalMediaError("本地视频导入目标路径越界")
+        await asyncio.to_thread(resolved_target_dir.mkdir, parents=True, exist_ok=True)
+        target = resolved_target_dir / f"local-input{source.suffix.lower()}"
+        total = (await asyncio.to_thread(source.stat)).st_size
+        copied = 0
+        last_reported = 10.0
+        try:
+            with source.open("rb") as input_stream, target.open("wb") as output_stream:
+                while True:
+                    await self._check_cancel(job_id, worker_id, heartbeat)
+                    chunk = await asyncio.to_thread(input_stream.read, 4 * 1024 * 1024)
+                    if not chunk:
+                        break
+                    await asyncio.to_thread(output_stream.write, chunk)
+                    copied += len(chunk)
+                    current = 10 + (65 * copied / total)
+                    if current - last_reported >= 1 or copied == total:
+                        last_reported = current
+                        await report_progress(
+                            JobStage.ACQUIRING_MEDIA,
+                            current,
+                            "正在导入本地视频",
+                        )
+            await asyncio.to_thread(shutil.copystat, source, target)
+        except BaseException:
+            await asyncio.to_thread(target.unlink, missing_ok=True)
+            raise
+        return DownloadResult(target, None)
 
     async def _check_cancel(
         self, job_id: str, worker_id: str, heartbeat: LeaseHeartbeat

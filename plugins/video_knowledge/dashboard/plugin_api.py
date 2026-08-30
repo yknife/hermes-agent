@@ -72,7 +72,13 @@ async def _dispatch(request: Request, tail: str):
         )
     except DomainError as exc:
         raise HTTPException(
-            status_code=404 if exc.code.endswith("NOT_FOUND") else 409,
+            status_code=(
+                404
+                if exc.code.endswith("NOT_FOUND")
+                else 422
+                if exc.code == "INVALID_LOCAL_MEDIA"
+                else 409
+            ),
             detail={"code": exc.code, "message": exc.message, "details": exc.details},
         ) from exc
     except MediaToolError as exc:

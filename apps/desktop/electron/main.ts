@@ -115,6 +115,7 @@ import {
 } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { removePersistedDesktopSessionToken } from './desktop-control-env'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
 import { installDesktopPluginFromGit, probePluginRepo } from './desktop-plugin-install'
@@ -207,6 +208,7 @@ import { snapHudBounds } from './hud-snap'
 import { createHudSnapShortcut } from './hud-snap-shortcut'
 import { buildHudWindowUrl } from './hud-url'
 import { imageContextMenuItems } from './image-context-menu'
+import { INSTALL_STAMP_SCHEMA_VERSION, parseInstallStamp } from './install-stamp'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { createMediaProtocolHandler, localMediaResponse, MEDIA_PROTOCOL } from './media-protocol'
@@ -612,8 +614,7 @@ const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 // build hasn't been invoked, or schema mismatch). Callers must handle null.
 //
 // Schema:
-//   { schemaVersion: 1, commit, branch, builtAt, dirty, source }
-const INSTALL_STAMP_SCHEMA_VERSION = 1
+//   { schemaVersion: 2, commit, branch, repository, builtAt, dirty, source }
 
 function loadInstallStamp() {
   // Try packaged location first (resources/install-stamp.json), then the
@@ -630,24 +631,16 @@ function loadInstallStamp() {
       const raw = fs.readFileSync(p, 'utf8')
       const parsed = JSON.parse(raw)
 
-      if (parsed && typeof parsed === 'object' && typeof parsed.commit === 'string' && parsed.commit.length >= 7) {
-        if (parsed.schemaVersion !== INSTALL_STAMP_SCHEMA_VERSION) {
-          console.warn(
-            `[hermes] install-stamp.json schemaVersion ${parsed.schemaVersion} != expected ${INSTALL_STAMP_SCHEMA_VERSION}; ignoring`
-          )
+      const stamp = parseInstallStamp(parsed, p)
 
-          continue
-        }
+      if (stamp) {
+        return stamp
+      }
 
-        return Object.freeze({
-          schemaVersion: parsed.schemaVersion,
-          commit: parsed.commit,
-          branch: parsed.branch || null,
-          builtAt: parsed.builtAt || null,
-          dirty: Boolean(parsed.dirty),
-          source: parsed.source || null,
-          path: p
-        })
+      if (parsed?.schemaVersion !== INSTALL_STAMP_SCHEMA_VERSION) {
+        console.warn(
+          `[hermes] install-stamp.json schemaVersion ${parsed?.schemaVersion} != expected ${INSTALL_STAMP_SCHEMA_VERSION}; ignoring`
+        )
       }
     } catch (e) {
       console.warn(`[hermes] install-stamp.json found at ${p} , but parsing failed with ${e}`)
@@ -9703,6 +9696,24 @@ function primaryProfileKey() {
   return readActiveDesktopProfile() || 'default'
 }
 
+function migratePersistedDesktopSessionToken(profile) {
+  try {
+    const result = removePersistedDesktopSessionToken(HERMES_HOME, profile)
+
+    if (result.removed) {
+      rememberLog(
+        `[boot] removed obsolete HERMES_DASHBOARD_SESSION_TOKEN entry from ${result.envPath}; Desktop credentials are process-local`
+      )
+    } else if (result.skippedEncoding) {
+      rememberLog(`[boot] skipped Desktop session-token migration for non-UTF-8 env file ${result.envPath}`)
+    }
+  } catch (error) {
+    rememberLog(
+      `[boot] could not migrate obsolete HERMES_DASHBOARD_SESSION_TOKEN entry for profile "${profile}": ${error.message}`
+    )
+  }
+}
+
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(profile, request?) {
   const config = readDesktopConnectionConfig()
@@ -10151,6 +10162,8 @@ async function spawnPoolBackend(profile, entry, opts: { forceLocal?: boolean; po
   const backendNonce = crypto.randomBytes(16).toString('hex')
   const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
 
+  migratePersistedDesktopSessionToken(profile)
+
   const child = spawn(
     backend.command,
     backend.args,
@@ -10509,6 +10522,8 @@ async function startHermes() {
     const parentStartMarker = await desktopParentStartMarker()
     const backendNonce = crypto.randomBytes(16).toString('hex')
     const parentIdentityEnv = parentWatchdogEnv(process.pid, parentStartMarker, backendNonce)
+
+    migratePersistedDesktopSessionToken(profile)
 
     const hermesProcess = spawn(
       backend.command,

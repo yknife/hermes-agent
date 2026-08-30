@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from plugins.video_knowledge.backend.app.infrastructure.db.base import KnowledgeDocument
+from plugins.video_knowledge.backend.app.schemas.media import AnalysisSelection
 
 
 class CitationRef(BaseModel):
@@ -21,12 +22,22 @@ class CitationRef(BaseModel):
         return self
 
 
+class DegradationRange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    chunk_index: int = Field(ge=1)
+    reason: Literal["model_invalid_response"] = "model_invalid_response"
+    citation: CitationRef
+
+
 class Chapter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=200)
     summary: str = Field(min_length=1)
     citation: CitationRef
+    degraded: bool = False
+    degradation_reason: Literal["model_invalid_response"] | None = None
 
 
 class KnowledgePoint(BaseModel):
@@ -37,6 +48,8 @@ class KnowledgePoint(BaseModel):
     content: str = Field(min_length=1)
     confidence: float = Field(ge=0, le=1)
     citation: CitationRef
+    degraded: bool = False
+    degradation_reason: Literal["model_invalid_response"] | None = None
 
 
 class SuggestedQA(BaseModel):
@@ -45,6 +58,8 @@ class SuggestedQA(BaseModel):
     question: str = Field(min_length=1)
     answer: str = Field(min_length=1)
     citation: CitationRef
+    degraded: bool = False
+    degradation_reason: Literal["model_invalid_response"] | None = None
 
 
 class AnalysisBundle(BaseModel):
@@ -54,9 +69,10 @@ class AnalysisBundle(BaseModel):
     chapters: list[Chapter]
     knowledge_points: list[KnowledgePoint]
     suggested_qa: list[SuggestedQA]
+    degraded_ranges: list[DegradationRange] = Field(default_factory=list)
 
 
-class AnalyzeRequest(BaseModel):
+class AnalyzeRequest(AnalysisSelection):
     force: bool = False
 
 

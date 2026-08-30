@@ -33,6 +33,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _derive_chat_session_id,
     _hermes_version,
+    _provider_response_format,
     _redact_api_error_text,
     _request_agent_overrides,
     _request_max_tokens,
@@ -63,6 +64,16 @@ def test_structured_output_instruction_exposes_requested_schema_to_agent():
     assert instruction is not None
     assert '"required":["answer"]' in instruction
     assert "Do not add properties" in instruction
+
+
+def test_deepseek_uses_json_object_with_schema_kept_in_system_instruction():
+    requested = {
+        "type": "json_schema",
+        "json_schema": {"name": "answer", "schema": {"type": "object"}},
+    }
+
+    assert _provider_response_format("deepseek", requested) == {"type": "json_object"}
+    assert _provider_response_format("custom:local", requested) is requested
 
 
 def test_structured_mode_is_explicit_and_false_by_default():
@@ -283,9 +294,10 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": False}
         assert captured["max_tokens"] == 4096
-        assert captured["request_overrides"]["extra_body"]["response_format"][
-            "type"
-        ] == "json_schema"
+        assert (
+            captured["request_overrides"]["extra_body"]["response_format"]["type"]
+            == "json_schema"
+        )
         assert agent._disable_length_continuation is True
         assert captured["checkpoints_enabled"] is True
         assert captured["checkpoint_max_snapshots"] == 7
@@ -2388,6 +2400,46 @@ class TestChatCompletionsAgentIncomplete:
             assert raw_secret not in resp.headers.get("X-Hermes-Error", "")
             assert "OPENAI_API_KEY=" in body
             assert data["error"]["hermes"]["failed"] is True
+
+    @pytest.mark.asyncio
+    async def test_structured_provider_capability_failure_has_machine_code(
+        self, adapter
+    ):
+        mock_result = {
+            "final_response": "",
+            "completed": False,
+            "partial": False,
+            "failed": True,
+            "error": "HTTP 400: This response_format type is unavailable now",
+            "messages": [],
+            "api_calls": 1,
+        }
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter, "_run_agent", new_callable=AsyncMock
+            ) as mock_run:
+                mock_run.return_value = (
+                    mock_result,
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "response_format": {
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": "answer",
+                                "schema": {"type": "object"},
+                            },
+                        },
+                    },
+                )
+                assert resp.status == 502
+                data = await resp.json()
+                assert data["error"]["code"] == "response_format_unsupported"
 
 
 # ---------------------------------------------------------------------------

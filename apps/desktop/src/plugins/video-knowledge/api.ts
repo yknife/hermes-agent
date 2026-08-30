@@ -14,6 +14,7 @@ import type {
   LiveSource,
   LiveSourceCreateResult,
   LiveSourceOptions,
+  LocalIngestOptions,
   Media,
   MediaDeleteResult,
   PlaybackInfo,
@@ -85,6 +86,12 @@ export const ingest = (url: string, options: IngestOptions) =>
     body: { url, ...options },
     timeoutMs: 30_000
   })
+export const ingestLocal = (path: string, title: string, author: string, options: LocalIngestOptions) =>
+  call<IngestResult>('/sources/local', {
+    method: 'POST',
+    body: { path, title, author: author.trim() || null, ...options },
+    timeoutMs: 30_000
+  })
 export const fetchLiveSources = () => call<LiveSource[]>('/sources/live')
 export const createLiveSource = (url: string, options: LiveSourceOptions) =>
   call<LiveSourceCreateResult>('/sources/live', {
@@ -99,10 +106,14 @@ export const updateLiveSource = (sourceId: string, enabled: boolean) =>
   })
 export const checkLiveSource = (sourceId: string) =>
   call<Job>(`/sources/${encodeURIComponent(sourceId)}/check-live`, { method: 'POST' })
-export const analyze = (mediaId: string) =>
+export const analyze = (mediaId: string, selection: null | { model: string; provider: string } = null) =>
   call<Job>(`/media/${encodeURIComponent(mediaId)}/analyze`, {
     method: 'POST',
-    body: { force: true }
+    body: {
+      force: true,
+      analysis_model: selection?.model ?? null,
+      analysis_provider: selection?.provider ?? null
+    }
   })
 
 export function mediaPlaybackUrl(path: string): string {

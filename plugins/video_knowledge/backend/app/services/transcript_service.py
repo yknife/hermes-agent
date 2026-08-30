@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 
-from sqlalchemy import func, select, text
+from sqlalchemy import bindparam, func, select, text
 
 from plugins.video_knowledge.backend.app.domain.enums import MediaAssetKind
 from plugins.video_knowledge.backend.app.domain.errors import MediaNotFoundError
@@ -181,30 +181,42 @@ class TranscriptService:
             return transcript, segments
 
     async def search(
-        self, query: str, *, media_id: str | None = None, limit: int = 50
+        self,
+        query: str,
+        *,
+        media_id: str | None = None,
+        media_ids: list[str] | None = None,
+        limit: int = 50,
     ) -> list[tuple[TranscriptSegment, str]]:
         query = query.strip()
         if not query:
             return []
+        scope_media_ids = [media_id] if media_id else media_ids
+        if scope_media_ids is not None:
+            scope_media_ids = list(dict.fromkeys(scope_media_ids))[:50]
+            if not scope_media_ids:
+                return []
         async with self.database.session() as session:
             if len(query) >= 3:
                 phrase = f'"{query.replace(chr(34), chr(34) * 2)}"'
+                scope_clause = (
+                    "AND t.media_id IN :media_ids " if scope_media_ids else ""
+                )
                 statement = text(
                     "SELECT s.id FROM transcript_segments_fts f "
                     "JOIN transcript_segments s ON s.id = f.segment_id "
                     "JOIN transcripts t ON t.id = s.transcript_id "
                     "WHERE transcript_segments_fts MATCH :query "
-                    "AND (:media_id IS NULL OR t.media_id = :media_id) "
-                    "ORDER BY bm25(transcript_segments_fts), s.start_ms LIMIT :limit"
+                    + scope_clause
+                    + "ORDER BY bm25(transcript_segments_fts), s.start_ms LIMIT :limit"
                 )
-                ids = list(
-                    (
-                        await session.execute(
-                            statement,
-                            {"query": phrase, "media_id": media_id, "limit": limit},
-                        )
-                    ).scalars()
-                )
+                parameters: dict[str, object] = {"query": phrase, "limit": limit}
+                if scope_media_ids:
+                    statement = statement.bindparams(
+                        bindparam("media_ids", expanding=True)
+                    )
+                    parameters["media_ids"] = scope_media_ids
+                ids = list((await session.execute(statement, parameters)).scalars())
             else:
                 ids = list(
                     (
@@ -219,8 +231,8 @@ class TranscriptService:
                                     query.casefold()
                                 ),
                                 *(
-                                    [Transcript.media_id == media_id]
-                                    if media_id
+                                    [Transcript.media_id.in_(scope_media_ids)]
+                                    if scope_media_ids
                                     else []
                                 ),
                             )

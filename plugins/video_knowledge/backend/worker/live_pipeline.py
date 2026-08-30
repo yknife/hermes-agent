@@ -326,6 +326,8 @@ class LiveRecordingPipeline:
                 "asr_vad_filter": bool(payload.get("asr_vad_filter", True)),
                 "asr_word_timestamps": bool(payload.get("asr_word_timestamps", False)),
                 "auto_analyze": bool(payload.get("auto_analyze", True)),
+                "analysis_provider": payload.get("analysis_provider"),
+                "analysis_model": payload.get("analysis_model"),
             },
             source_id=live_session.source_id,
             media_id=media.id,

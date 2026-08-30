@@ -67,6 +67,117 @@ async def test_chat_completions_returns_structured_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_applies_request_scoped_model_without_changing_default() -> (
+    None
+):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["model"] == "qwen3.5-4b"
+        assert payload["provider"] == "custom:ynknife_local"
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": '{"summary":"ok"}'}}]}
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HermesClient(
+            "http://hermes.test/v1", model="hermes-agent", client=http_client
+        )
+        result = await client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            schema_name="analysis",
+            schema={"type": "object"},
+            model="qwen3.5-4b",
+            provider="custom:ynknife_local",
+        )
+
+    assert result == {"summary": "ok"}
+    assert client.model == "hermes-agent"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_retries_with_schema_prompt_when_format_is_unsupported() -> (
+    None
+):
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if len(requests) == 1:
+            return httpx.Response(
+                502,
+                json={
+                    "error": {
+                        "message": "Upstream provider rejected the request",
+                        "type": "server_error",
+                        "code": "response_format_unsupported",
+                    }
+                },
+            )
+        assert payload["response_format"] == {"type": "json_object"}
+        assert payload["model_options"]["structured_mode"] is True
+        assert "JSON Schema named 'analysis'" in payload["messages"][0]["content"]
+        assert '"required":["summary"]' in payload["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"summary":"ok"}'}}]},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HermesClient(
+            "http://hermes.test/v1",
+            client=http_client,
+            max_retries=0,
+        )
+        result = await client.generate_json(
+            system_prompt="system",
+            user_prompt="user",
+            schema_name="analysis",
+            schema={
+                "type": "object",
+                "required": ["summary"],
+                "properties": {"summary": {"type": "string"}},
+            },
+        )
+
+    assert result == {"summary": "ok"}
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_unrelated_gateway_failure_does_not_disable_response_format() -> None:
+    requests: list[dict[str, object]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            502,
+            json={"error": {"message": "upstream connection failed"}},
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as http_client:
+        client = HermesClient(
+            "http://hermes.test/v1",
+            client=http_client,
+            max_retries=0,
+        )
+        with pytest.raises(HermesClientError):
+            await client.generate_json(
+                system_prompt="system",
+                user_prompt="user",
+                schema_name="analysis",
+                schema={"type": "object"},
+            )
+
+    assert len(requests) == 1
+    assert requests[0]["response_format"]["type"] == "json_schema"
+
+
+@pytest.mark.asyncio
 async def test_invalid_response_is_not_retryable() -> None:
     transport = httpx.MockTransport(
         lambda _request: httpx.Response(

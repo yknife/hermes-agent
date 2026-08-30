@@ -315,6 +315,7 @@ class JobStateMachine:
             await self._transition_loaded(
                 session, job, JobStatus.PAUSED, actor=actor, message="任务已暂停"
             )
+            await self._close_attempt(session, job, JobStatus.PAUSED.value, None)
             return job
 
     async def resume(self, job_id: str, actor: str = "api") -> Job:

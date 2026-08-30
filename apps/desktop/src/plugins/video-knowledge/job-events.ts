@@ -8,6 +8,15 @@ function isLiveRecordingProgress(event: JobEvent): boolean {
   )
 }
 
+function isSameProgress(previous: JobEvent, current: JobEvent): boolean {
+  return (
+    previous.type === 'job.progress'
+    && current.type === 'job.progress'
+    && previous.data.stage === current.data.stage
+    && previous.data.message === current.data.message
+  )
+}
+
 function isLiveMonitorPollEvent(event: JobEvent): boolean {
   if (event.data.stage !== 'MONITORING_LIVE') {
     return false
@@ -31,7 +40,8 @@ export function collapseProgressEvents(events: JobEvent[]): JobEvent[] {
     if (
       previous
       && (
-        (isLiveRecordingProgress(previous) && isLiveRecordingProgress(event))
+        isSameProgress(previous, event)
+        || (isLiveRecordingProgress(previous) && isLiveRecordingProgress(event))
         || (isLiveMonitorPollEvent(previous) && isLiveMonitorPollEvent(event))
       )
     ) {

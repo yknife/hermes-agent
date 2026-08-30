@@ -58,4 +58,15 @@ describe('collapseProgressEvents', () => {
 
     expect(collapsed.map(value => value.event_id)).toEqual(['8'])
   })
+
+  it('keeps only the newest event from repeated local import progress', () => {
+    const collapsed = collapseProgressEvents([
+      event('1', 'job.progress', '正在导入本地视频', 'ACQUIRING_MEDIA'),
+      event('2', 'job.progress', '正在导入本地视频', 'ACQUIRING_MEDIA'),
+      event('3', 'job.progress', '正在导入本地视频', 'ACQUIRING_MEDIA'),
+      event('4', 'job.progress', '正在校验媒体完整性', 'VERIFYING_MEDIA')
+    ])
+
+    expect(collapsed.map(value => value.event_id)).toEqual(['3', '4'])
+  })
 })

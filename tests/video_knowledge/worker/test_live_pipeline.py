@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -146,6 +147,8 @@ async def test_live_pipeline_reconnects_and_queues_existing_postprocess(
             "asr_enabled": True,
             "asr_model": "small",
             "auto_analyze": True,
+            "analysis_provider": "custom:ynknife_local",
+            "analysis_model": "qwen3.5-4b",
         },
     )
     assert duplicate is False
@@ -195,6 +198,9 @@ async def test_live_pipeline_reconnects_and_queues_existing_postprocess(
         JobType.RECORD_LIVE.value,
     ]
     assert jobs[1].media_id == completed.media_id
+    postprocess_input = json.loads(jobs[1].input_json)
+    assert postprocess_input["analysis_provider"] == "custom:ynknife_local"
+    assert postprocess_input["analysis_model"] == "qwen3.5-4b"
     assert jobs[2].status == JobStatus.PENDING.value
     assert source.id == completed.source_id
     await database.dispose()

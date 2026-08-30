@@ -23,6 +23,8 @@ def _service(request: Request, database: Database) -> KnowledgeService:
         request.app.state.hermes_client,
         prompt_version=settings.analysis_prompt_version,
         chunk_characters=settings.analysis_chunk_characters,
+        max_chunk_segments=settings.analysis_max_chunk_segments,
+        structured_attempts=settings.analysis_structured_attempts,
     )
 
 
@@ -48,6 +50,8 @@ async def analyze_media(
     job = await _service(request, database).queue_analysis(
         media_id,
         force=payload.force,
+        analysis_provider=payload.analysis_provider,
+        analysis_model=payload.analysis_model,
         actor=f"api:{request.state.request_id}",
     )
     return JobRead.from_orm_job(job)

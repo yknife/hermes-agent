@@ -20,15 +20,15 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.main import create_app
+from plugins.video_knowledge.backend.app.services.job_service import (
+    JobStateMachine,
+    new_id,
+)
 from plugins.video_knowledge.backend.app.services.media_service import (
     MediaService,
     SourceService,
     classify_source_type,
     normalize_url,
-)
-from plugins.video_knowledge.backend.app.services.job_service import (
-    JobStateMachine,
-    new_id,
 )
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
@@ -104,6 +104,57 @@ def test_duplicate_ingest_reuses_source_and_job(tmp_path: Path) -> None:
             await database.dispose()
 
     assert asyncio.run(counts()) == (1, 1)
+
+
+def test_local_source_api_accepts_path_title_and_author(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'local-api.db'}"
+    asyncio.run(initialize_schema(database_url))
+    storage = tmp_path / "storage"
+    local_video = tmp_path / "演示视频.mp4"
+    local_video.write_bytes(b"local-video")
+    settings = Settings(database_url=database_url, storage_root=storage)
+
+    with TestClient(create_app(settings)) as client:
+        created = client.post(
+            "/api/v1/sources/local",
+            json={
+                "path": str(local_video),
+                "title": "本地演示",
+                "author": "测试作者",
+                "auto_analyze": False,
+            },
+        )
+        duplicate = client.post(
+            "/api/v1/sources/local",
+            json={
+                "path": str(local_video),
+                "title": "本地演示",
+                "author": "测试作者",
+                "auto_analyze": False,
+            },
+        )
+        invalid = client.post(
+            "/api/v1/sources/local",
+            json={
+                "path": str(tmp_path / "missing.mp4"),
+                "title": "不存在",
+            },
+        )
+
+    assert created.status_code == 201
+    body = created.json()
+    assert body["source"]["platform"] == "local"
+    assert body["source"]["url"] == local_video.name
+    assert str(tmp_path) not in body["source"]["url"]
+    assert body["job"]["input"]["source_kind"] == "local"
+    assert body["job"]["input"]["local_path"] == str(local_video.resolve())
+    assert body["job"]["input"]["title"] == "本地演示"
+    assert body["job"]["input"]["author"] == "测试作者"
+    assert duplicate.status_code == 201
+    assert duplicate.json()["duplicate"] is True
+    assert duplicate.json()["job"]["id"] == body["job"]["id"]
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "INVALID_LOCAL_MEDIA"
 
 
 @pytest.mark.asyncio

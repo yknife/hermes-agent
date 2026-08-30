@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,7 @@ class FakeHermesClient:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.selections: list[tuple[str | None, str | None]] = []
 
     async def generate_json(
         self,
@@ -38,9 +40,12 @@ class FakeHermesClient:
         user_prompt: str,
         schema_name: str,
         schema: object,
+        model: str | None = None,
+        provider: str | None = None,
     ) -> dict[str, object]:
         del schema
         self.calls += 1
+        self.selections.append((provider, model))
         assert "不可信" in system_prompt
         assert schema_name == "video_knowledge_analysis"
         assert '"segment_id":"s1"' in user_prompt
@@ -95,6 +100,23 @@ class FlakyHermesClient(FakeHermesClient):
         return await super().generate_json(**kwargs)  # type: ignore[arg-type]
 
 
+class EmptyCitedContentClient(FakeHermesClient):
+    def __init__(self, *, recover: bool) -> None:
+        super().__init__()
+        self.recover = recover
+
+    async def generate_json(self, **kwargs: object) -> dict[str, object]:
+        if self.recover and self.calls > 0:
+            return await super().generate_json(**kwargs)  # type: ignore[arg-type]
+        self.calls += 1
+        return {
+            "summary": "summary without cited knowledge",
+            "chapters": [],
+            "knowledge_points": [],
+            "suggested_qa": [],
+        }
+
+
 class InvalidReduceClient(FakeHermesClient):
     def __init__(self) -> None:
         super().__init__()
@@ -124,6 +146,29 @@ class BoundaryDroppingReduceClient(FakeHermesClient):
         }
 
 
+class BoundaryPreservingReduceClient(FakeHermesClient):
+    async def generate_json(self, **kwargs: object) -> dict[str, object]:
+        del kwargs
+        self.calls += 1
+        return {
+            "summary": "valid global result",
+            "chapters": [
+                {
+                    "title": f"chapter {index}",
+                    "summary": "model result",
+                    "citation": {
+                        "segment_ids": [f"segment_{index}"],
+                        "start_ms": index * 1000,
+                        "end_ms": (index + 1) * 1000,
+                    },
+                }
+                for index in range(2)
+            ],
+            "knowledge_points": [],
+            "suggested_qa": [],
+        }
+
+
 class UnparseableClient(FakeHermesClient):
     def __init__(self, *, retryable: bool = False) -> None:
         super().__init__()
@@ -136,6 +181,23 @@ class UnparseableClient(FakeHermesClient):
             "Hermes returned an invalid structured response",
             retryable=self.retryable,
         )
+
+
+@pytest.mark.asyncio
+async def test_map_analysis_forwards_request_scoped_model_selection() -> None:
+    client = FakeHermesClient()
+    service = KnowledgeService(None, client)  # type: ignore[arg-type]
+
+    bundle = await service._generate_map_bundle(
+        1,
+        1,
+        [SimpleNamespace(id="segment_1", start_ms=0, end_ms=1, text="text")],
+        analysis_provider="custom:ynknife_local",
+        analysis_model="qwen3.5-4b",
+    )
+
+    assert bundle.summary == "可靠摘要"
+    assert client.selections == [("custom:ynknife_local", "qwen3.5-4b")]
 
 
 def test_citation_times_are_derived_from_authoritative_segment_ids() -> None:
@@ -277,7 +339,7 @@ async def test_map_prompt_uses_compact_ids_and_restores_database_ids() -> None:
     ]
 
 
-def test_chunks_bound_segment_count_even_when_transcript_text_is_short() -> None:
+def test_short_transcript_uses_smaller_segment_batches() -> None:
     service = KnowledgeService(None, FakeHermesClient())  # type: ignore[arg-type]
     segments = [
         SimpleNamespace(
@@ -291,7 +353,58 @@ def test_chunks_bound_segment_count_even_when_transcript_text_is_short() -> None
 
     chunks = service._chunks(segments)
 
-    assert [len(chunk) for chunk in chunks] == [24, 24, 24, 24, 5]
+    assert [len(chunk) for chunk in chunks] == [32, 32, 32, 5]
+
+
+@pytest.mark.parametrize(
+    ("duration_ms", "expected"),
+    [
+        (5 * 60_000, 32),
+        (5 * 60_000 + 1, 40),
+        (15 * 60_000 + 1, 48),
+        (30 * 60_000 + 1, 64),
+        (60 * 60_000 + 1, 80),
+        (120 * 60_000 + 1, 96),
+    ],
+)
+def test_chunk_segment_limit_adapts_to_transcript_duration(
+    duration_ms: int, expected: int
+) -> None:
+    service = KnowledgeService(None, FakeHermesClient())  # type: ignore[arg-type]
+    segments = [
+        SimpleNamespace(id="first", start_ms=0, end_ms=1, text="first"),
+        SimpleNamespace(
+            id="last",
+            start_ms=max(0, duration_ms - 1),
+            end_ms=duration_ms,
+            text="last",
+        ),
+    ]
+
+    assert service._chunk_segment_limit(segments) == expected
+
+
+def test_adaptive_segment_limit_respects_operator_ceiling() -> None:
+    service = KnowledgeService(  # type: ignore[arg-type]
+        None, FakeHermesClient(), max_chunk_segments=48
+    )
+    segments = [
+        SimpleNamespace(id="first", start_ms=0, end_ms=1, text="first"),
+        SimpleNamespace(
+            id="last", start_ms=3 * 60 * 60_000 - 1, end_ms=3 * 60 * 60_000, text="last"
+        ),
+    ]
+
+    assert service._chunk_segment_limit(segments) == 48
+
+
+def test_analysis_fingerprint_includes_adaptive_chunk_plan() -> None:
+    service = KnowledgeService(None, FakeHermesClient())  # type: ignore[arg-type]
+    transcript = SimpleNamespace(id="transcript", version=1)
+
+    assert service._fingerprint(  # type: ignore[arg-type]
+        transcript, chunk_segment_limit=32
+    ) != service._fingerprint(transcript, chunk_segment_limit=96)  # type: ignore[arg-type]
 
 
 def test_missing_map_boundaries_supplement_model_result_instead_of_replacing_it() -> (
@@ -338,14 +451,22 @@ def test_map_schema_hard_limits_generated_array_lengths() -> None:
     properties = schema["properties"]
 
     assert properties["chapters"]["maxItems"] == 3
+    assert properties["chapters"]["minItems"] == 1
     assert properties["knowledge_points"]["maxItems"] == 4
+    assert properties["knowledge_points"]["minItems"] == 1
     assert properties["suggested_qa"]["maxItems"] == 2
+    assert properties["suggested_qa"]["minItems"] == 1
     assert properties["summary"]["maxLength"] == 300
     definitions = schema["$defs"]
     assert definitions["Chapter"]["properties"]["summary"]["maxLength"] == 120
     assert definitions["KnowledgePoint"]["properties"]["content"]["maxLength"] == 120
     assert definitions["SuggestedQA"]["properties"]["answer"]["maxLength"] == 120
     assert definitions["CitationRef"]["properties"]["segment_ids"]["maxItems"] == 2
+    assert definitions["CitationRef"]["properties"]["segment_ids"]["minItems"] == 1
+    assert "degraded_ranges" not in properties
+    for definition_name in ("Chapter", "KnowledgePoint", "SuggestedQA"):
+        assert "degraded" not in definitions[definition_name]["properties"]
+        assert "degradation_reason" not in definitions[definition_name]["properties"]
 
 
 @pytest.mark.asyncio
@@ -443,6 +564,56 @@ async def test_reduce_rejects_valid_result_that_drops_the_final_map_chunk() -> N
 
 
 @pytest.mark.asyncio
+async def test_reduce_preserves_fallback_ranges_when_global_model_result_succeeds() -> (
+    None
+):
+    mapped = [
+        AnalysisBundle.model_validate({
+            "summary": f"summary {index}",
+            "chapters": [
+                {
+                    "title": f"map chapter {index}",
+                    "summary": "map result",
+                    "citation": {
+                        "segment_ids": [f"segment_{index}"],
+                        "start_ms": index * 1000,
+                        "end_ms": (index + 1) * 1000,
+                    },
+                }
+            ],
+            "knowledge_points": [],
+            "suggested_qa": [],
+            "degraded_ranges": (
+                [
+                    {
+                        "chunk_index": 2,
+                        "reason": "model_invalid_response",
+                        "citation": {
+                            "segment_ids": ["segment_1"],
+                            "start_ms": 1000,
+                            "end_ms": 2000,
+                        },
+                    }
+                ]
+                if index == 1
+                else []
+            ),
+        })
+        for index in range(2)
+    ]
+    service = KnowledgeService(
+        None,
+        BoundaryPreservingReduceClient(),  # type: ignore[arg-type]
+    )
+
+    result = await service._reduce(mapped)
+
+    assert result.summary == "valid global result"
+    assert len(result.degraded_ranges) == 1
+    assert result.degraded_ranges[0].citation.start_ms == 1000
+
+
+@pytest.mark.asyncio
 async def test_invalid_map_response_falls_back_to_cited_transcript_excerpt() -> None:
     client = InvalidReduceClient()
     service = KnowledgeService(
@@ -475,6 +646,54 @@ async def test_invalid_map_response_falls_back_to_cited_transcript_excerpt() -> 
     assert result.knowledge_points[0].type == "evidence"
     assert result.knowledge_points[0].content.startswith("transcript text 0")
     assert result.suggested_qa[0].answer.startswith("transcript text 0")
+    assert result.degraded_ranges[0].chunk_index == 3
+    assert result.degraded_ranges[0].citation.start_ms == 0
+    assert result.degraded_ranges[0].citation.end_ms == 8000
+    assert all(item.degraded for item in result.chapters)
+    assert all(
+        item.degradation_reason == "model_invalid_response"
+        for item in result.knowledge_points
+    )
+
+
+@pytest.mark.asyncio
+async def test_empty_cited_map_response_is_retried_before_fallback() -> None:
+    client = EmptyCitedContentClient(recover=True)
+    service = KnowledgeService(
+        None,
+        client,
+        structured_attempts=2,  # type: ignore[arg-type]
+    )
+
+    result = await service._generate_map_bundle(
+        1,
+        1,
+        [SimpleNamespace(id="segment_1", start_ms=0, end_ms=1000, text="text")],
+    )
+
+    assert client.calls == 2
+    assert result.chapters[0].degraded is False
+    assert result.degraded_ranges == []
+
+
+@pytest.mark.asyncio
+async def test_repeated_empty_cited_map_response_uses_fallback() -> None:
+    client = EmptyCitedContentClient(recover=False)
+    service = KnowledgeService(
+        None,
+        client,
+        structured_attempts=2,  # type: ignore[arg-type]
+    )
+
+    result = await service._generate_map_bundle(
+        4,
+        4,
+        [SimpleNamespace(id="segment_1", start_ms=0, end_ms=1000, text="text")],
+    )
+
+    assert client.calls == 2
+    assert result.degraded_ranges[0].chunk_index == 4
+    assert result.chapters[0].degraded is True
 
 
 @pytest.mark.asyncio
@@ -596,4 +815,7 @@ async def test_analysis_persists_four_versioned_documents(tmp_path: Path) -> Non
     assert [item.id for item in reused] == [item.id for item in first]
     assert client.calls == 1
     assert progress == [(1, 1)]
+    summary = next(item for item in first if item.document_type == "summary")
+    assert json.loads(summary.content_json)["degraded"] is False
+    assert json.loads(summary.content_json)["degraded_ranges"] == []
     await database.dispose()
