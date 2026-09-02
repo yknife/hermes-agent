@@ -5,10 +5,12 @@ import {
   bindApi,
   deleteMedia,
   fetchRuntimeStatus,
+  fetchStorageSettings,
   ingest,
   ingestLocal,
   mediaPlaybackUrl,
   mediaThumbnailUrl,
+  migrateStorage,
   probeSource
 } from './api'
 import type { IngestOptions, LocalIngestOptions } from './types'
@@ -36,7 +38,7 @@ describe('video knowledge plugin API', () => {
     const rest = vi.fn().mockResolvedValue({})
 
     dispose.push(bindApi(rest))
-    await probeSource('https://example.test/video')
+    await probeSource('https://example.test/video', String.raw`C:\private\youtube-cookies.txt`)
 
     const options: IngestOptions = {
       asr_compute_type: 'auto',
@@ -54,7 +56,10 @@ describe('video knowledge plugin API', () => {
     await ingest('https://example.test/video', options)
 
     expect(rest).toHaveBeenNthCalledWith(1, '/sources/probe', {
-      body: { url: 'https://example.test/video' },
+      body: {
+        url: 'https://example.test/video',
+        cookies_file: String.raw`C:\private\youtube-cookies.txt`
+      },
       method: 'POST',
       timeoutMs: 45_000
     })
@@ -109,6 +114,21 @@ describe('video knowledge plugin API', () => {
     await fetchRuntimeStatus()
 
     expect(rest).toHaveBeenCalledWith('/system/runtime', undefined)
+  })
+
+  it('reads and starts global media storage migration', async () => {
+    const rest = vi.fn().mockResolvedValue({ storage_root: String.raw`D:\HermesMedia` })
+
+    dispose.push(bindApi(rest))
+    await fetchStorageSettings()
+    await migrateStorage(String.raw`E:\VideoKnowledge`)
+
+    expect(rest).toHaveBeenNthCalledWith(1, '/system/storage', undefined)
+    expect(rest).toHaveBeenNthCalledWith(2, '/system/storage', {
+      body: { target_path: String.raw`E:\VideoKnowledge` },
+      method: 'PUT',
+      timeoutMs: 30_000
+    })
   })
 
   it('deletes media through the plugin REST namespace', async () => {

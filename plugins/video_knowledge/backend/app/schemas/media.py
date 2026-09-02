@@ -16,6 +16,7 @@ from plugins.video_knowledge.backend.media_adapters.models import LiveStatus, Me
 
 class SourceProbeRequest(BaseModel):
     url: HttpUrl
+    cookies_file: str | None = Field(default=None, min_length=1, max_length=32767)
 
 
 class AnalysisSelection(BaseModel):
@@ -33,6 +34,7 @@ class AnalysisSelection(BaseModel):
 
 class SourceIngestRequest(AnalysisSelection):
     url: HttpUrl
+    cookies_file: str | None = Field(default=None, min_length=1, max_length=32767)
     max_height: int = Field(default=1080, ge=144, le=4320)
     subtitle_languages: list[str] = Field(default_factory=lambda: ["zh-CN", "zh", "en"])
     asr_enabled: bool = True

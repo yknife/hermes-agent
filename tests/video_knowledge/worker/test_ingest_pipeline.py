@@ -5,7 +5,6 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
 from plugins.video_knowledge.backend.app.domain.enums import (
     JobStage,
     JobStatus,
@@ -42,6 +41,7 @@ from plugins.video_knowledge.backend.transcript import (
 from plugins.video_knowledge.backend.worker.asr_pipeline import ASRPipeline
 from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
 from plugins.video_knowledge.backend.worker.pipeline import IngestVideoPipeline
+from sqlalchemy import select
 
 
 class FakeDownloader(YtDlpAdapter):

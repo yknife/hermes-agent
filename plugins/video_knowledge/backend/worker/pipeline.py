@@ -18,6 +18,7 @@ from plugins.video_knowledge.backend.app.services.job_service import JobStateMac
 from plugins.video_knowledge.backend.app.services.media_service import (
     MediaService,
     ThumbnailExtractor,
+    resolve_cookie_file_path,
     resolve_local_video_path,
 )
 from plugins.video_knowledge.backend.app.services.transcript_service import (
@@ -128,6 +129,13 @@ class IngestVideoPipeline:
         payload = json.loads(job.input_json)
         url = str(payload["url"])
         is_local = payload.get("source_kind") == "local"
+        request_cookies_file = (
+            await asyncio.to_thread(
+                resolve_cookie_file_path, str(payload["cookies_file"])
+            )
+            if payload.get("cookies_file")
+            else self.cookies_file
+        )
 
         # Automatic retries keep the previously reported progress. Replaying the
         # deterministic pipeline must therefore never emit an earlier percentage.
@@ -195,7 +203,7 @@ class IngestVideoPipeline:
             else:
                 await report_progress(JobStage.PROBING, 5, "正在探测视频元数据")
                 probe = await self.downloader.probe(
-                    url, cookies_file=self.cookies_file, proxy=self.proxy
+                    url, cookies_file=request_cookies_file, proxy=self.proxy
                 )
                 if probe.is_live:
                     raise ValueError("直播地址请使用直播采集任务")
@@ -239,7 +247,7 @@ class IngestVideoPipeline:
                         url,
                         temp_dir,
                         max_height=int(payload.get("max_height", 1080)),
-                        cookies_file=self.cookies_file,
+                        cookies_file=request_cookies_file,
                         proxy=self.proxy,
                         on_progress=progress,
                     )
@@ -294,7 +302,7 @@ class IngestVideoPipeline:
                 url,
                 temp_dir / "subtitles",
                 track,
-                cookies_file=self.cookies_file,
+                cookies_file=request_cookies_file,
                 proxy=self.proxy,
             )
             await self._check_cancel(job.id, worker_id, heartbeat)

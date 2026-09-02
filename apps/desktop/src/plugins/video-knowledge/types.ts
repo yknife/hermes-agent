@@ -18,6 +18,28 @@ export interface RuntimeToolStatus {
   detail?: null | string
 }
 
+export type StorageMigrationPhase =
+  'IDLE' | 'COPYING' | 'VERIFYING' | 'SWITCHING' | 'CLEANING' | 'COMPLETED' | 'FAILED'
+
+export interface StorageMigrationStatus {
+  id: null | string
+  phase: StorageMigrationPhase
+  source_path: string
+  target_path: null | string
+  total_bytes: number
+  processed_bytes: number
+  total_files: number
+  processed_files: number
+  progress: number
+  error: null | string
+  warning: null | string
+}
+
+export interface StorageSettings {
+  storage_root: string
+  migration: StorageMigrationStatus
+}
+
 export interface AsrStatus {
   enabled: boolean
   model: string
@@ -262,6 +284,7 @@ export interface KnowledgeDocument {
 
 export interface IngestOptions extends AsrOptions {
   auto_analyze: boolean
+  cookies_file?: null | string
   max_height: number
   subtitle_languages: string[]
 }

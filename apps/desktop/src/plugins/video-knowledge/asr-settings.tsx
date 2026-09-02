@@ -1,17 +1,26 @@
 import {
-  Badge, Button, Checkbox, Codicon, Input, Loader, Select, SelectContent, SelectItem,
+  Badge, Button, Checkbox, Codicon, host, Input, Loader, Select, SelectContent, SelectItem,
   SelectTrigger, SelectValue, Switch, useMutation, useQuery, useQueryClient
 } from '@hermes/plugin-sdk'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
-import { downloadAsrModel, fetchAsrStatus, fetchRuntimeStatus, updateAsrSettings } from './api'
-import { errorMessage } from './format'
-import type { AsrSettingsUpdate, AsrStatus } from './types'
+import {
+  downloadAsrModel,
+  fetchAsrStatus,
+  fetchRuntimeStatus,
+  fetchStorageSettings,
+  migrateStorage,
+  updateAsrSettings
+} from './api'
+import { errorMessage, fileSize } from './format'
+import type { AsrSettingsUpdate, AsrStatus, StorageMigrationPhase, StorageSettings } from './types'
 
 const STATUS_KEY = ['video-knowledge', 'system', 'asr'] as const
 const RUNTIME_KEY = ['video-knowledge', 'system', 'runtime'] as const
+const STORAGE_KEY = ['video-knowledge', 'system', 'storage'] as const
+const ACTIVE_MIGRATION_PHASES = new Set<StorageMigrationPhase>(['COPYING', 'VERIFYING', 'SWITCHING', 'CLEANING'])
 
-export function AsrSettingsView() {
+export function SystemSettingsView() {
   const status = useQuery({
     queryFn: fetchAsrStatus,
     queryKey: STATUS_KEY,
@@ -68,10 +77,12 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
     <div className="min-h-0 flex-1 overflow-auto p-5">
       <div className="mx-auto max-w-5xl space-y-4">
         <header>
-          <div className="text-[0.6875rem] font-semibold uppercase tracking-wider text-primary">本地语音识别</div>
-          <h2 className="mt-1 text-lg font-semibold">faster-whisper 配置与模型</h2>
-          <p className="mt-1 text-xs text-muted-foreground">这里保存的是新任务默认值；“添加内容”仍可针对单个视频或直播覆盖这些配置。</p>
+          <div className="text-[0.6875rem] font-semibold uppercase tracking-wider text-primary">Video Knowledge</div>
+          <h2 className="mt-1 text-lg font-semibold">系统设置</h2>
+          <p className="mt-1 text-xs text-muted-foreground">管理媒体资产存储目录、运行环境和 faster-whisper 默认配置。</p>
         </header>
+
+        <StorageSettingsSection />
 
         <RuntimeReadiness />
 
@@ -131,6 +142,151 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
       </div>
     </div>
   )
+}
+
+function StorageSettingsSection() {
+  const queryClient = useQueryClient()
+  const [targetPath, setTargetPath] = useState('')
+
+  const storage = useQuery({
+    queryFn: fetchStorageSettings,
+    queryKey: STORAGE_KEY,
+    refetchInterval: query => ACTIVE_MIGRATION_PHASES.has(query.state.data?.migration.phase ?? 'IDLE') ? 500 : false,
+    refetchOnMount: 'always'
+  })
+
+  const migration = storage.data?.migration
+  const active = ACTIVE_MIGRATION_PHASES.has(migration?.phase ?? 'IDLE')
+
+  useEffect(() => {
+    if (storage.data && !targetPath) {
+      setTargetPath(storage.data.storage_root)
+    }
+  }, [storage.data, targetPath])
+
+  const picker = useMutation({
+    mutationFn: () => host.selectPaths({
+      defaultPath: targetPath || storage.data?.storage_root,
+      directories: true,
+      multiple: false,
+      title: '选择新的媒体资产存储目录（必须为空）'
+    }),
+    onSuccess: paths => {
+      if (paths[0]) {
+        setTargetPath(paths[0])
+      }
+    }
+  })
+
+  const migrate = useMutation({
+    mutationFn: migrateStorage,
+    onSuccess: value => {
+      queryClient.setQueryData<StorageSettings>(STORAGE_KEY, value)
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge'] })
+    }
+  })
+
+  useEffect(() => {
+    if (migration?.phase === 'COMPLETED' && storage.data) {
+      setTargetPath(storage.data.storage_root)
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge'] })
+    }
+  }, [migration?.phase, queryClient, storage.data])
+
+  const changed = Boolean(targetPath.trim() && targetPath.trim() !== storage.data?.storage_root)
+  const phaseLabel = migration ? storagePhaseLabel(migration.phase) : '读取中'
+
+  return (
+    <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">媒体资产存储目录</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            视频、封面、ASR 音频和 Transcript 文件保存在这里；数据库仍保留在 Hermes 配置目录。
+          </p>
+        </div>
+        <Badge variant={active ? 'default' : 'outline'}>{active ? phaseLabel : '全局配置'}</Badge>
+      </div>
+
+      {storage.isLoading ? (
+        <Loader className="mt-5" />
+      ) : storage.isError ? (
+        <div className="mt-4 text-xs text-destructive">{errorMessage(storage.error, '读取存储设置失败')}</div>
+      ) : (
+        <>
+          <div className="mt-5 flex gap-2">
+            <Input
+              aria-label="媒体资产存储目录"
+              disabled={active}
+              onChange={event => setTargetPath(event.target.value)}
+              placeholder="例如 D:\\HermesMedia"
+              value={targetPath}
+            />
+            <Button disabled={active || picker.isPending} onClick={() => picker.mutate()} type="button" variant="secondary">
+              <Codicon name="folder-opened" />
+              {picker.isPending ? '选择中…' : '选择目录'}
+            </Button>
+            <Button
+              disabled={!changed || active || migrate.isPending}
+              onClick={() => migrate.mutate(targetPath.trim())}
+              type="button"
+            >
+              <Codicon name="move" />
+              {migrate.isPending ? '准备迁移…' : '迁移并应用'}
+            </Button>
+          </div>
+          <div className="mt-2 break-all text-[0.6875rem] text-muted-foreground">
+            当前目录：{storage.data?.storage_root}
+          </div>
+          <p className="mt-2 text-[0.6875rem] text-muted-foreground">
+            目标文件夹必须为空。迁移期间暂停创建任务；复制并逐文件哈希校验成功后才切换目录，最后清理旧目录。
+          </p>
+        </>
+      )}
+
+      {migration && migration.phase !== 'IDLE' && (
+        <div className="mt-4 rounded-md border border-(--ui-stroke-secondary) bg-background/40 p-4">
+          <div className="flex items-center justify-between gap-3 text-xs">
+            <strong>{phaseLabel}</strong>
+            <span>{migration.progress.toFixed(1)}%</span>
+          </div>
+          <div
+            aria-valuemax={100}
+            aria-valuemin={0}
+            aria-valuenow={migration.progress}
+            className="mt-3 h-2 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+          >
+            <div
+              className={`h-full rounded-full transition-[width] duration-300 ${migration.phase === 'FAILED' ? 'bg-destructive' : 'bg-primary'}`}
+              style={{ width: `${migration.progress}%` }}
+            />
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-[0.6875rem] text-muted-foreground">
+            <span>{migration.processed_files}/{migration.total_files} 个文件步骤</span>
+            <span>{fileSize(migration.processed_bytes)} / {fileSize(migration.total_bytes)}</span>
+            {migration.target_path && <span className="break-all">目标：{migration.target_path}</span>}
+          </div>
+          {migration.error && <div className="mt-2 text-xs text-destructive">{migration.error}</div>}
+          {migration.warning && <div className="mt-2 text-xs text-amber-600 dark:text-amber-300">{migration.warning}</div>}
+        </div>
+      )}
+      {migrate.error && <div className="mt-3 text-xs text-destructive">{errorMessage(migrate.error, '启动迁移失败')}</div>}
+      {picker.error && <div className="mt-3 text-xs text-destructive">{errorMessage(picker.error, '选择目录失败')}</div>}
+    </section>
+  )
+}
+
+function storagePhaseLabel(phase: StorageMigrationPhase): string {
+  return {
+    IDLE: '尚未迁移',
+    COPYING: '正在复制媒体资产',
+    VERIFYING: '正在校验迁移数据',
+    SWITCHING: '正在切换存储目录',
+    CLEANING: '正在清理旧目录',
+    COMPLETED: '迁移完成',
+    FAILED: '迁移失败'
+  }[phase]
 }
 
 function RuntimeReadiness() {

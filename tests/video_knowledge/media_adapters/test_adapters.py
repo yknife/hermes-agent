@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from plugins.video_knowledge.backend.media_adapters.errors import (
     AuthenticationRequiredError,
+    MediaUnavailableError,
 )
 from plugins.video_knowledge.backend.media_adapters.tools import (
     AsyncCommandRunner,
@@ -170,11 +171,52 @@ async def test_probe_uses_argument_list_and_maps_metadata() -> None:
 
 
 @pytest.mark.asyncio
+async def test_youtube_probe_with_cookies_uses_compatible_player_and_ejs_args(
+    tmp_path: Path,
+) -> None:
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    runner = FakeRunner((
+        0,
+        json.dumps({
+            "id": "06rHoEpiuYY",
+            "title": "Authenticated video",
+            "webpage_url": "https://www.youtube.com/watch?v=06rHoEpiuYY",
+            "extractor_key": "Youtube",
+        }),
+        "",
+    ))
+
+    await YtDlpAdapter(runner=runner, command=("yt-dlp",)).probe(
+        "https://www.youtube.com/watch?v=06rHoEpiuYY",
+        cookies_file=cookies,
+    )
+
+    assert runner.args[runner.args.index("--extractor-args") + 1] == (
+        "youtube:player_client=default,web_embedded"
+    )
+    assert runner.args[runner.args.index("--js-runtimes") + 1] == "node"
+    assert runner.args[runner.args.index("--remote-components") + 1] == "ejs:github"
+    assert runner.args[runner.args.index("--cookies") + 1] == str(cookies)
+
+
+@pytest.mark.asyncio
 async def test_probe_maps_auth_error_without_leaking_stderr() -> None:
     runner = FakeRunner((1, "", "Please sign in; cookies at C:/secret/cookies.txt"))
     with pytest.raises(AuthenticationRequiredError, match="Cookies") as caught:
         await YtDlpAdapter(runner=runner).probe("https://example.test/private")
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_probe_does_not_misclassify_unavailable_video_cookie_hint() -> None:
+    runner = FakeRunner((
+        1,
+        "",
+        "This video is unavailable. Try --cookies-from-browser for authentication.",
+    ))
+    with pytest.raises(MediaUnavailableError, match="视频目前不可用"):
+        await YtDlpAdapter(runner=runner).probe("https://example.test/unavailable")
 
 
 @pytest.mark.asyncio

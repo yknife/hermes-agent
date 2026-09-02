@@ -39,6 +39,11 @@ class JobRead(BaseModel):
 
     @classmethod
     def from_orm_job(cls, job: Job) -> "JobRead":
+        input_value = json.loads(job.input_json)
+        # A request-scoped cookie path is an implementation credential detail.
+        # Workers read it from the persisted job directly; API consumers must
+        # never receive it through task-center/job responses.
+        input_value.pop("cookies_file", None)
         return cls(
             id=job.id,
             source_id=job.source_id,
@@ -54,7 +59,7 @@ class JobRead(BaseModel):
             lease_owner=job.lease_owner,
             lease_expires_at=job.lease_expires_at,
             cancel_requested_at=job.cancel_requested_at,
-            input=json.loads(job.input_json),
+            input=input_value,
             result=json.loads(job.result_json) if job.result_json else None,
             error_code=job.error_code,
             error_message=job.error_message,

@@ -25,6 +25,7 @@ from plugins.video_knowledge.backend.app.services.media_service import (
     SourceService,
     classify_source_type,
     normalize_url,
+    resolve_cookie_file_path,
 )
 from plugins.video_knowledge.backend.media_adapters import (
     LiveStatus,
@@ -40,6 +41,11 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 async def probe_source(payload: SourceProbeRequest, request: Request) -> ProbeRead:
     url, platform = normalize_url(str(payload.url))
     settings = request.app.state.settings
+    cookies_file = (
+        resolve_cookie_file_path(payload.cookies_file)
+        if payload.cookies_file
+        else settings.yt_dlp_cookies_file
+    )
     if classify_source_type(url, platform) == SourceType.LIVE:
         try:
             live_status = await StreamGetAdapter(proxy=settings.download_proxy).resolve(
@@ -49,7 +55,7 @@ async def probe_source(payload: SourceProbeRequest, request: Request) -> ProbeRe
             live_status = LiveStatus(platform=platform, is_live=False)
         return ProbeRead.from_live(url, live_status, platform=platform)
     probe = await YtDlpAdapter().probe(
-        url, cookies_file=settings.yt_dlp_cookies_file, proxy=settings.download_proxy
+        url, cookies_file=cookies_file, proxy=settings.download_proxy
     )
     result = ProbeRead.from_probe(probe)
     if probe.is_live:
@@ -76,6 +82,11 @@ async def ingest_source(
             },
             "analysis_provider": payload.analysis_provider,
             "analysis_model": payload.analysis_model,
+            "cookies_file": (
+                str(resolve_cookie_file_path(payload.cookies_file))
+                if payload.cookies_file
+                else None
+            ),
         },
         actor=f"api:{request.state.request_id}",
     )

@@ -12,6 +12,10 @@ from alembic.config import Config
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.storage_service import (
+    StorageMigrationManager,
+    StorageSettingsService,
+)
 from plugins.video_knowledge.backend.hermes_client import HermesClient
 
 
@@ -153,6 +157,7 @@ class ManagedVideoKnowledgeRuntime:
         self.start_worker = start_worker
         self.database: Database | None = None
         self.hermes_client: HermesClient | None = None
+        self.storage_manager: StorageMigrationManager | None = None
         self.supervisor = WorkerSupervisor(
             settings, self.repo_root, parent_pid=parent_pid or os.getpid()
         )
@@ -163,7 +168,6 @@ class ManagedVideoKnowledgeRuntime:
         async with self._start_lock:
             if self._started:
                 return
-            self.settings.storage_root.mkdir(parents=True, exist_ok=True)
             database_path = _database_path(self.settings.database_url)
             if database_path is not None:
                 database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +180,14 @@ class ManagedVideoKnowledgeRuntime:
             await asyncio.to_thread(self._migrate)
             self.database = Database(self.settings.database_url)
             await ASRSettingsService(self.database, self.settings).load()
+            await StorageSettingsService(self.database, self.settings).load()
+            self.settings.storage_root.mkdir(parents=True, exist_ok=True)
+            self.storage_manager = StorageMigrationManager(
+                self.database,
+                self.settings,
+                stop_worker=self._stop_worker,
+                start_worker=self._start_worker,
+            )
             secret = self.settings.hermes_api_key
             self.hermes_client = HermesClient(
                 self.settings.hermes_base_url,
@@ -200,6 +212,8 @@ class ManagedVideoKnowledgeRuntime:
         async with self._start_lock:
             if not self._started:
                 return
+            if self.storage_manager is not None:
+                await self.storage_manager.wait()
             await self.supervisor.stop()
             if self.hermes_client is not None:
                 await self.hermes_client.close()
@@ -207,7 +221,16 @@ class ManagedVideoKnowledgeRuntime:
             if self.database is not None:
                 await self.database.dispose()
                 self.database = None
+            self.storage_manager = None
             self._started = False
+
+    async def _stop_worker(self) -> None:
+        if self.start_worker:
+            await self.supervisor.stop()
+
+    async def _start_worker(self) -> None:
+        if self.start_worker:
+            await self.supervisor.start()
 
     async def resources(self) -> tuple[Database, HermesClient]:
         await self.start()

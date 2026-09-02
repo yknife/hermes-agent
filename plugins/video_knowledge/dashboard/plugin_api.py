@@ -76,7 +76,12 @@ async def _dispatch(request: Request, tail: str):
                 404
                 if exc.code.endswith("NOT_FOUND")
                 else 422
-                if exc.code == "INVALID_LOCAL_MEDIA"
+                if exc.code
+                in {
+                    "INVALID_LOCAL_MEDIA",
+                    "INVALID_COOKIE_FILE",
+                    "INVALID_STORAGE_PATH",
+                }
                 else 409
             ),
             detail={"code": exc.code, "message": exc.message, "details": exc.details},
@@ -106,6 +111,11 @@ async def video_knowledge_events(websocket: WebSocket) -> None:
     database, _client = await runtime.resources()
     query_service = JobQueryService(database)
     cursor = websocket.query_params.get("last_event_id")
+    if cursor is None:
+        # This socket only nudges the Desktop to refetch current state. Replaying
+        # the complete persisted history after every Desktop restart can starve
+        # the HTTP API for minutes on long-running live monitors.
+        cursor = await query_service.latest_event_id()
     idle_ticks = 0
     try:
         while True:

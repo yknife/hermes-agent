@@ -21,6 +21,7 @@ from plugins.video_knowledge.backend.app.domain.enums import (
     SourceType,
 )
 from plugins.video_knowledge.backend.app.domain.errors import (
+    InvalidCookieFileError,
     InvalidLocalMediaError,
     InvalidSourceUrlError,
     MediaDeleteConflictError,
@@ -71,6 +72,31 @@ MEDIA_DELETE_ACTIVE_STATUSES = {
     JobStatus.WAITING_LIVE.value,
 }
 logger = logging.getLogger(__name__)
+COOKIE_FILE_MAX_BYTES = 10 * 1024 * 1024
+
+
+def resolve_cookie_file_path(raw_path: str) -> Path:
+    """Validate a user-selected Netscape cookie file without reading secrets."""
+    value = raw_path.strip()
+    if not value or "\0" in value:
+        raise InvalidCookieFileError("请选择有效的 Cookies 文件")
+    try:
+        path = Path(value).expanduser().resolve(strict=True)
+        size = path.stat().st_size
+    except (OSError, RuntimeError) as exc:
+        raise InvalidCookieFileError("Cookies 文件不存在或无法访问") from exc
+    if not path.is_file():
+        raise InvalidCookieFileError("Cookies 路径不是文件")
+    if size <= 0 or size > COOKIE_FILE_MAX_BYTES:
+        raise InvalidCookieFileError("Cookies 文件为空或超过 10 MB")
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="strict") as stream:
+            header = stream.readline().strip()
+    except (OSError, UnicodeError) as exc:
+        raise InvalidCookieFileError("Cookies 文件不是有效的 UTF-8 文本") from exc
+    if header not in {"# Netscape HTTP Cookie File", "# HTTP Cookie File"}:
+        raise InvalidCookieFileError("Cookies 文件必须使用 Netscape 格式")
+    return path
 
 
 class ThumbnailExtractor(Protocol):

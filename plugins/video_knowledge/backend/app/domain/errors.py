@@ -51,6 +51,21 @@ class InvalidLocalMediaError(DomainError):
     retryable = False
 
 
+class InvalidCookieFileError(DomainError):
+    code = "INVALID_COOKIE_FILE"
+    retryable = False
+
+
+class InvalidStoragePathError(DomainError):
+    code = "INVALID_STORAGE_PATH"
+    retryable = False
+
+
+class StorageMigrationConflictError(DomainError):
+    code = "STORAGE_MIGRATION_CONFLICT"
+    retryable = False
+
+
 class TranscriptNotFoundError(DomainError):
     code = "TRANSCRIPT_NOT_FOUND"
 

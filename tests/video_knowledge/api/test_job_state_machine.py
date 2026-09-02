@@ -121,6 +121,7 @@ async def test_cancel_is_cooperative_and_terminal_state_is_protected(
 async def test_every_state_change_persists_an_event(tmp_path: Path) -> None:
     database = await create_database(tmp_path / "events.db")
     state_machine = JobStateMachine(database)
+    query = JobQueryService(database)
     try:
         created = await state_machine.create()
         await state_machine.claim_next("worker", 30)
@@ -143,6 +144,7 @@ async def test_every_state_change_persists_an_event(tmp_path: Path) -> None:
             "job.state_changed",
             "job.state_changed",
         ]
+        assert await query.latest_event_id() == events[-1].id
     finally:
         await database.dispose()
 

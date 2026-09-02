@@ -10,6 +10,9 @@ from pydantic import ValidationError
 from sqlalchemy import text
 
 from plugins.video_knowledge.backend.app.domain.enums import JobStatus, SourceType
+from plugins.video_knowledge.backend.app.domain.errors import (
+    StorageMigrationConflictError,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.base import MediaAsset
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.integration.runtime import (
@@ -37,7 +40,10 @@ from plugins.video_knowledge.backend.app.schemas.media import (
     SourceProbeRequest,
     SourceRead,
 )
-from plugins.video_knowledge.backend.app.schemas.system import ASRSettingsUpdate
+from plugins.video_knowledge.backend.app.schemas.system import (
+    ASRSettingsUpdate,
+    StorageMigrationRequest,
+)
 from plugins.video_knowledge.backend.app.schemas.transcripts import (
     TranscriptRead,
     TranscriptSearchResult,
@@ -57,6 +63,7 @@ from plugins.video_knowledge.backend.app.services.media_service import (
     SourceService,
     classify_source_type,
     normalize_url,
+    resolve_cookie_file_path,
 )
 from plugins.video_knowledge.backend.app.services.runtime_service import (
     RuntimeReadinessService,
@@ -108,6 +115,24 @@ class VideoKnowledgeController:
         if method == "GET" and parts == ["system", "runtime"]:
             return self._json(
                 await RuntimeReadinessService(self.runtime.settings).status()
+            )
+        if method == "GET" and parts == ["system", "storage"]:
+            if self.runtime.storage_manager is None:
+                raise RuntimeError("存储迁移服务尚未初始化")
+            return self._json(self.runtime.storage_manager.response())
+        if method == "PUT" and parts == ["system", "storage"]:
+            if self.runtime.storage_manager is None:
+                raise RuntimeError("存储迁移服务尚未初始化")
+            request = StorageMigrationRequest.model_validate(payload)
+            result = await self.runtime.storage_manager.start(request.target_path)
+            return ControllerResponse(result.model_dump(mode="json"), 202)
+        if (
+            method != "GET"
+            and self.runtime.storage_manager is not None
+            and self.runtime.storage_manager.in_progress
+        ):
+            raise StorageMigrationConflictError(
+                "媒体资产正在迁移，暂时不能创建或修改任务"
             )
         if method == "PUT" and parts == ["system", "asr"]:
             service = ASRSettingsService(database, self.runtime.settings)
@@ -176,6 +201,11 @@ class VideoKnowledgeController:
             probe_request = SourceProbeRequest.model_validate(payload)
             url, platform = normalize_url(str(probe_request.url))
             settings = self.runtime.settings
+            cookies_file = (
+                resolve_cookie_file_path(probe_request.cookies_file)
+                if probe_request.cookies_file
+                else settings.yt_dlp_cookies_file
+            )
             if classify_source_type(url, platform) == SourceType.LIVE:
                 try:
                     live_status = await StreamGetAdapter(
@@ -188,7 +218,7 @@ class VideoKnowledgeController:
                 )
             probe = await YtDlpAdapter().probe(
                 url,
-                cookies_file=settings.yt_dlp_cookies_file,
+                cookies_file=cookies_file,
                 proxy=settings.download_proxy,
             )
             result = ProbeRead.from_probe(probe)
@@ -213,6 +243,11 @@ class VideoKnowledgeController:
                     "auto_analyze": ingest_request.auto_analyze,
                     "analysis_provider": ingest_request.analysis_provider,
                     "analysis_model": ingest_request.analysis_model,
+                    "cookies_file": (
+                        str(resolve_cookie_file_path(ingest_request.cookies_file))
+                        if ingest_request.cookies_file
+                        else None
+                    ),
                 },
                 actor=actor,
             )

@@ -23,8 +23,15 @@ import {
 } from '@hermes/plugin-sdk'
 import { useEffect, useState } from 'react'
 
-import { createLiveSource, fetchAsrStatus, ingest, ingestLocal, probeSource } from './api'
-import { durationLabel, errorMessage } from './format'
+import {
+  createLiveSource,
+  fetchAsrStatus,
+  fetchStorageSettings,
+  ingest,
+  ingestLocal,
+  probeSource
+} from './api'
+import { durationLabel, errorCode, errorMessage } from './format'
 import type { IngestOptions, LiveSourceOptions, LocalIngestOptions } from './types'
 
 const MODELS = [
@@ -36,10 +43,18 @@ const MODELS = [
   { label: 'large-v3-turbo（更快、更省资源）', value: 'large-v3-turbo' }
 ]
 
-export function AddContentView({ onCreated }: { onCreated: (jobId: string) => void }) {
+export function AddContentView({
+  onCreated,
+  onOpenSystemSettings
+}: {
+  onCreated: (jobId: string) => void
+  onOpenSystemSettings: () => void
+}) {
   const queryClient = useQueryClient()
   const [sourceMode, setSourceMode] = useState<'link' | 'local'>('link')
   const [url, setUrl] = useState('')
+  const [cookiesPath, setCookiesPath] = useState('')
+  const [requiresCookies, setRequiresCookies] = useState(false)
   const [localPath, setLocalPath] = useState('')
   const [localTitle, setLocalTitle] = useState('')
   const [localAuthor, setLocalAuthor] = useState('')
@@ -60,7 +75,22 @@ export function AddContentView({ onCreated }: { onCreated: (jobId: string) => vo
   const [analysisModelPickerOpen, setAnalysisModelPickerOpen] = useState(false)
   const [defaultsApplied, setDefaultsApplied] = useState(false)
   const asrStatus = useQuery({ queryFn: fetchAsrStatus, queryKey: ['video-knowledge', 'system', 'asr'] })
-  const probe = useMutation({ mutationFn: probeSource })
+
+  const storageSettings = useQuery({
+    queryFn: fetchStorageSettings,
+    queryKey: ['video-knowledge', 'system', 'storage']
+  })
+
+  const probe = useMutation({
+    mutationFn: ({ cookiesFile, sourceUrl }: { cookiesFile: null | string; sourceUrl: string }) => (
+      probeSource(sourceUrl, cookiesFile)
+    ),
+    onError: error => {
+      if (errorCode(error) === 'AUTH_REQUIRED') {
+        setRequiresCookies(true)
+      }
+    }
+  })
 
   const analysisModelController: ModelMenuController = {
     applyPreset: (_preset, row) => setAnalysisSelection(row),
@@ -141,6 +171,7 @@ export function AddContentView({ onCreated }: { onCreated: (jobId: string) => vo
       const options: IngestOptions = {
         ...asrOptions,
         auto_analyze: autoAnalyze,
+        cookies_file: cookiesPath.trim() || null,
         max_height: Number(maxHeight),
         subtitle_languages: subtitleLanguages
           .split(',')
@@ -175,13 +206,35 @@ export function AddContentView({ onCreated }: { onCreated: (jobId: string) => vo
     }
   })
 
-  const runProbe = () => {
-      if (!url.trim()) {
+  const pickCookiesFile = useMutation({
+    mutationFn: () => host.selectPaths({
+      filters: [{ name: 'Cookies 文件', extensions: ['txt'] }],
+      multiple: false,
+      title: '选择 Netscape Cookies 文件'
+    }),
+    onSuccess: paths => {
+      const path = paths[0]
+
+      if (!path) {
         return
       }
 
+      setCookiesPath(path)
+      probe.reset()
       collect.reset()
-      probe.mutate(url.trim())
+    }
+  })
+
+  const runProbe = () => {
+    if (!url.trim()) {
+      return
+    }
+
+    collect.reset()
+    probe.mutate({
+      cookiesFile: cookiesPath.trim() || null,
+      sourceUrl: url.trim()
+    })
   }
 
   const sourceType = sourceMode === 'local' ? 'VIDEO' : probe.data?.source_type
@@ -231,6 +284,8 @@ export function AddContentView({ onCreated }: { onCreated: (jobId: string) => vo
               aria-pressed={sourceMode === 'local'}
               onClick={() => {
                 setSourceMode('local')
+                setCookiesPath('')
+                setRequiresCookies(false)
                 probe.reset()
                 collect.reset()
               }}
@@ -242,26 +297,84 @@ export function AddContentView({ onCreated }: { onCreated: (jobId: string) => vo
             </Button>
           </div>
 
-          {sourceMode === 'link' ? (
-            <Field label="内容链接">
-              <div className="flex gap-2">
-                <Input
-                  aria-label="内容链接"
-                  onChange={event => {
-                    setUrl(event.target.value)
-                    probe.reset()
-                    collect.reset()
-                  }}
-                  placeholder="视频地址或直播间地址"
-                  type="url"
-                  value={url}
-                />
-                <Button disabled={!url.trim() || probe.isPending} type="submit">
-                  <Codicon name="search" />
-                  {probe.isPending ? '识别中…' : '识别链接'}
-                </Button>
+          <div className="rounded-md border border-amber-500/35 bg-amber-500/10 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <Codicon className="text-amber-600 dark:text-amber-300" name="folder-opened" />
+                  当前媒体资产存储路径
+                </div>
+                <div className="mt-2 break-all rounded bg-background/50 px-3 py-2 font-mono text-[0.6875rem] text-(--ui-text-secondary)">
+                  {storageSettings.isLoading
+                    ? '正在读取存储配置…'
+                    : storageSettings.data?.storage_root ?? '暂时无法读取存储路径'}
+                </div>
+                <p className="mt-2 text-[0.6875rem] leading-5 text-muted-foreground">
+                  内容链接和本地视频共用此目录。建议第一次添加内容前先修改到空间充足的磁盘，避免视频、封面、ASR 音频和 Transcript 持续占用 C 盘。
+                </p>
+                {storageSettings.isError && (
+                  <div className="mt-2 text-[0.6875rem] text-destructive">
+                    {errorMessage(storageSettings.error, '读取存储路径失败')}
+                  </div>
+                )}
               </div>
-            </Field>
+              <Button onClick={onOpenSystemSettings} size="sm" type="button" variant="secondary">
+                <Codicon name="settings-gear" />
+                前往系统设置
+              </Button>
+            </div>
+          </div>
+
+          {sourceMode === 'link' ? (
+            <div className="space-y-4">
+              <Field label="内容链接">
+                <div className="flex gap-2">
+                  <Input
+                    aria-label="内容链接"
+                    onChange={event => {
+                      setUrl(event.target.value)
+                      setCookiesPath('')
+                      setRequiresCookies(false)
+                      probe.reset()
+                      collect.reset()
+                    }}
+                    placeholder="视频地址或直播间地址"
+                    type="url"
+                    value={url}
+                  />
+                  <Button disabled={!url.trim() || probe.isPending} type="submit">
+                    <Codicon name="search" />
+                    {probe.isPending ? '识别中…' : '识别链接'}
+                  </Button>
+                </div>
+              </Field>
+              {requiresCookies && (
+                <Field label="Cookies 文件">
+                  <div className="space-y-1.5">
+                    <div className="flex gap-2">
+                      <Input
+                        aria-label="Cookies 文件路径"
+                        placeholder="请选择 Netscape 格式的 cookies.txt"
+                        readOnly
+                        value={cookiesPath}
+                      />
+                      <Button
+                        disabled={pickCookiesFile.isPending}
+                        onClick={() => pickCookiesFile.mutate()}
+                        type="button"
+                        variant="secondary"
+                      >
+                        <Codicon name="folder-opened" />
+                        {pickCookiesFile.isPending ? '选择中…' : '选择文件'}
+                      </Button>
+                    </div>
+                    <div className="font-normal text-muted-foreground">
+                      仅用于当前链接的识别和采集；选择后请重新点击“识别链接”。
+                    </div>
+                  </div>
+                </Field>
+              )}
+            </div>
           ) : (
             <div className="space-y-4">
               <Field label="本地视频路径">
@@ -438,9 +551,9 @@ export function AddContentView({ onCreated }: { onCreated: (jobId: string) => vo
           )}
         </form>
 
-        {(probe.error || pickLocalFile.error || collect.error) && (
+        {(probe.error || pickLocalFile.error || pickCookiesFile.error || collect.error) && (
           <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
-            {errorMessage(probe.error || pickLocalFile.error || collect.error, '内容识别或任务创建失败')}
+            {errorMessage(probe.error || pickLocalFile.error || pickCookiesFile.error || collect.error, '内容识别或任务创建失败')}
           </div>
         )}
       </section>

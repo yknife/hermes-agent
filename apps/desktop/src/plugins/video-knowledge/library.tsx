@@ -58,6 +58,7 @@ export function LibraryView({
   const [knowledgeView, setKnowledgeView] = useState<'categories' | 'timeline'>('timeline')
   const [questionDialogOpen, setQuestionDialogOpen] = useState(false)
   const [questionMediaIds, setQuestionMediaIds] = useState<Set<string>>(new Set())
+  const [playerExpanded, setPlayerExpanded] = useState(false)
   const [analysisSelection, setAnalysisSelection] = useState<null | { model: string; provider: string }>(null)
   const [analysisModelPickerOpen, setAnalysisModelPickerOpen] = useState(false)
   const [analysisSelectionMediaId, setAnalysisSelectionMediaId] = useState<null | string>(null)
@@ -65,6 +66,26 @@ export function LibraryView({
   const media = useQuery({ queryKey: ['video-knowledge', 'media'], queryFn: fetchMedia, refetchInterval: 5_000 })
   const activeMediaId = selected ?? media.data?.[0]?.id ?? null
   const activeMedia = media.data?.find(item => item.id === activeMediaId) ?? null
+
+  useEffect(() => {
+    setPlayerExpanded(false)
+  }, [activeMediaId])
+
+  useEffect(() => {
+    if (!playerExpanded) {
+      return
+    }
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setPlayerExpanded(false)
+      }
+    }
+
+    document.addEventListener('keydown', closeOnEscape)
+
+    return () => document.removeEventListener('keydown', closeOnEscape)
+  }, [playerExpanded])
 
   const playback = useQuery({
     enabled: Boolean(activeMediaId),
@@ -165,6 +186,7 @@ export function LibraryView({
       player.current?.pause()
       player.current?.removeAttribute('src')
       player.current?.load()
+      setPlayerExpanded(false)
       await deleteMedia(item.id)
 
       return item.id
@@ -391,14 +413,30 @@ export function LibraryView({
 
             <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(24rem,1.25fr)_minmax(20rem,0.9fr)]">
               <div className="space-y-4">
-                <div className="overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-black">
+                {playerExpanded && (
+                  <button
+                    aria-label="退出放大播放"
+                    className="fixed inset-0 z-[70] cursor-default bg-black/80"
+                    onClick={() => setPlayerExpanded(false)}
+                    type="button"
+                  />
+                )}
+                <div
+                  aria-label={playerExpanded ? '放大视频播放器' : undefined}
+                  className={
+                    playerExpanded
+                      ? 'fixed inset-4 top-[calc(var(--titlebar-height,34px)+1rem)] z-[80] flex items-center justify-center overflow-hidden rounded-lg border border-white/20 bg-black shadow-2xl'
+                      : 'relative overflow-hidden rounded-lg border border-(--ui-stroke-secondary) bg-black'
+                  }
+                  role={playerExpanded ? 'dialog' : undefined}
+                >
                   {playback.isLoading ? (
-                    <div className="flex aspect-video items-center justify-center">
+                    <div className={playerExpanded ? 'flex h-full w-full items-center justify-center' : 'flex aspect-video items-center justify-center'}>
                       <Loader />
                     </div>
                   ) : playback.data ? (
                     <video
-                      className="aspect-video w-full"
+                      className={playerExpanded ? 'h-full w-full object-contain' : 'aspect-video w-full'}
                       controls
                       onLoadedMetadata={event => {
                         if (initialSeekMs !== null && initialSeekMs !== undefined) {
@@ -412,9 +450,23 @@ export function LibraryView({
                       src={mediaPlaybackUrl(playback.data.path)}
                     />
                   ) : (
-                    <div className="flex aspect-video items-center justify-center text-xs text-white/60">
+                    <div className={playerExpanded ? 'flex h-full w-full items-center justify-center text-xs text-white/60' : 'flex aspect-video items-center justify-center text-xs text-white/60'}>
                       本地视频文件不可用
                     </div>
+                  )}
+                  {playback.data && (
+                    <Button
+                      aria-label={playerExpanded ? '退出放大播放' : '放大播放'}
+                      className="absolute right-2 top-2 z-10 bg-black/65 text-white hover:bg-black/85"
+                      onClick={() => setPlayerExpanded(value => !value)}
+                      size="xs"
+                      title={playerExpanded ? '退出放大播放（Esc）' : '放大播放'}
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Codicon name={playerExpanded ? 'screen-normal' : 'screen-full'} />
+                      {playerExpanded ? '退出放大' : '放大播放'}
+                    </Button>
                   )}
                 </div>
 

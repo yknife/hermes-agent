@@ -18,6 +18,7 @@ from plugins.video_knowledge.backend.media_adapters.errors import (
     AuthenticationRequiredError,
     InvalidMediaError,
     MediaToolError,
+    MediaUnavailableError,
     NetworkTimeoutError,
     RateLimitedError,
     UnsupportedUrlError,
@@ -239,7 +240,35 @@ def _raise_for_failure(stderr: str) -> None:
     value = stderr.lower()
     if "unsupported url" in value or "no suitable extractor" in value:
         raise UnsupportedUrlError("暂不支持该视频地址")
-    if any(term in value for term in ("sign in", "login", "cookies", "authentication")):
+    # yt-dlp often appends a generic suggestion to use browser cookies to
+    # unrelated YouTube failures. Classify the actual failure before looking
+    # for authentication hints so an unavailable/deleted video is not
+    # misleadingly reported as a missing-login problem.
+    if any(
+        term in value
+        for term in (
+            "video is unavailable",
+            "this video has been removed",
+            "video unavailable",
+            "not available in your country",
+            "not available in your region",
+        )
+    ):
+        raise MediaUnavailableError(
+            "该视频目前不可用，可能已删除、设为私密或受地区限制"
+        )
+    if any(
+        term in value
+        for term in (
+            "sign in",
+            "login required",
+            "authentication required",
+            "private video",
+            "members-only",
+            "cookies are no longer valid",
+            "cookies do not contain",
+        )
+    ):
         raise AuthenticationRequiredError("该视频需要登录凭据或 Cookies")
     if any(
         term in value
@@ -273,6 +302,23 @@ class YtDlpAdapter:
             args.extend(("--proxy", proxy))
         return args
 
+    @staticmethod
+    def _youtube_cookie_args(url: str, cookies_file: Path | None) -> list[str]:
+        """Use the currently working logged-in YouTube client and EJS path."""
+        host = (urlsplit(url).hostname or "").lower().rstrip(".")
+        if cookies_file is None or not (
+            host in {"youtube.com", "youtu.be"} or host.endswith(".youtube.com")
+        ):
+            return []
+        return [
+            "--extractor-args",
+            "youtube:player_client=default,web_embedded",
+            "--js-runtimes",
+            "node",
+            "--remote-components",
+            "ejs:github",
+        ]
+
     async def probe(
         self, url: str, *, cookies_file: Path | None = None, proxy: str | None = None
     ) -> MediaProbe:
@@ -283,6 +329,7 @@ class YtDlpAdapter:
             "--dump-single-json",
             "--skip-download",
             "--no-warnings",
+            *self._youtube_cookie_args(url, cookies_file),
             *self._auth_args(cookies_file, proxy),
             url,
         ]
@@ -390,6 +437,7 @@ class YtDlpAdapter:
             "json3/vtt/srt/ass/best",
             "--output",
             template,
+            *self._youtube_cookie_args(url, cookies_file),
             *self._auth_args(cookies_file, proxy),
             url,
         ]
@@ -458,6 +506,7 @@ class YtDlpAdapter:
             template,
             "--format",
             selector,
+            *self._youtube_cookie_args(url, cookies_file),
             *self._auth_args(cookies_file, proxy),
             url,
         ]

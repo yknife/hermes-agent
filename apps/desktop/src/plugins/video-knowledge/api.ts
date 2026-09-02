@@ -20,6 +20,7 @@ import type {
   PlaybackInfo,
   Probe,
   RuntimeStatus,
+  StorageSettings,
   Transcript,
   TranscriptSearchResult
 } from './types'
@@ -53,6 +54,13 @@ function call<T>(path: string, options?: PluginRestOptions): Promise<T> {
 
 export const fetchHealth = () => call<Health>('/system/health')
 export const fetchRuntimeStatus = () => call<RuntimeStatus>('/system/runtime')
+export const fetchStorageSettings = () => call<StorageSettings>('/system/storage')
+export const migrateStorage = (targetPath: string) =>
+  call<StorageSettings>('/system/storage', {
+    method: 'PUT',
+    body: { target_path: targetPath },
+    timeoutMs: 30_000
+  })
 export const fetchAsrStatus = () => call<AsrStatus>('/system/asr')
 export const updateAsrSettings = (value: AsrSettingsUpdate) =>
   call<AsrStatus>('/system/asr', { method: 'PUT', body: value })
@@ -78,8 +86,12 @@ export const searchTranscript = (mediaId: string, query: string) =>
   call<TranscriptSearchResult[]>(`/search?media_id=${encodeURIComponent(mediaId)}&q=${encodeURIComponent(query)}`)
 export const fetchKnowledge = (mediaId: string) =>
   call<KnowledgeDocument[]>(`/media/${encodeURIComponent(mediaId)}/knowledge`)
-export const probeSource = (url: string) =>
-  call<Probe>('/sources/probe', { method: 'POST', body: { url }, timeoutMs: 45_000 })
+export const probeSource = (url: string, cookiesFile: null | string = null) =>
+  call<Probe>('/sources/probe', {
+    method: 'POST',
+    body: { url, cookies_file: cookiesFile },
+    timeoutMs: 45_000
+  })
 export const ingest = (url: string, options: IngestOptions) =>
   call<IngestResult>('/sources/ingest', {
     method: 'POST',

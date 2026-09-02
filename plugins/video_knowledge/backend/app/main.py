@@ -36,7 +36,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if exc.code.endswith("NOT_FOUND")
                 else 422
                 if exc.code
-                in {"INVALID_SOURCE_URL", "INVALID_LOCAL_MEDIA", "UNSUPPORTED_URL"}
+                in {
+                    "INVALID_SOURCE_URL",
+                    "INVALID_LOCAL_MEDIA",
+                    "INVALID_COOKIE_FILE",
+                    "INVALID_STORAGE_PATH",
+                    "UNSUPPORTED_URL",
+                }
                 else 409
             ),
             content={

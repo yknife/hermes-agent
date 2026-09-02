@@ -9,6 +9,10 @@ from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.core.logging import configure_logging
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.storage_service import (
+    StorageMigrationManager,
+    StorageSettingsService,
+)
 from plugins.video_knowledge.backend.hermes_client import HermesClient
 
 
@@ -18,7 +22,6 @@ def create_lifespan(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         configure_logging(settings.log_level)
-        settings.storage_root.mkdir(parents=True, exist_ok=True)
         database_url = make_url(settings.database_url)
         database_path = database_url.database
         is_file_sqlite = (
@@ -33,6 +36,18 @@ def create_lifespan(
             Path(database_path).parent.mkdir(parents=True, exist_ok=True)
         database = Database(settings.database_url)
         await ASRSettingsService(database, settings).load()
+        await StorageSettingsService(database, settings).load()
+        settings.storage_root.mkdir(parents=True, exist_ok=True)
+
+        async def no_worker() -> None:
+            return None
+
+        storage_manager = StorageMigrationManager(
+            database,
+            settings,
+            stop_worker=no_worker,
+            start_worker=no_worker,
+        )
         secret = settings.hermes_api_key
         hermes_client = HermesClient(
             settings.hermes_base_url,
@@ -46,7 +61,9 @@ def create_lifespan(
         app.state.database = database
         app.state.hermes_client = hermes_client
         app.state.settings = settings
+        app.state.storage_manager = storage_manager
         yield
+        await storage_manager.wait()
         await hermes_client.close()
         await database.dispose()
 

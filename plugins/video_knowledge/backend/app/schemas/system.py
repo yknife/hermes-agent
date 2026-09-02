@@ -75,3 +75,34 @@ class RuntimeToolStatus(BaseModel):
 class RuntimeStatusResponse(BaseModel):
     ready: bool
     tools: list[RuntimeToolStatus]
+
+
+class StorageMigrationRequest(BaseModel):
+    target_path: str = Field(min_length=1, max_length=32767)
+
+
+class StorageMigrationStatusResponse(BaseModel):
+    id: str | None = None
+    phase: Literal[
+        "IDLE",
+        "COPYING",
+        "VERIFYING",
+        "SWITCHING",
+        "CLEANING",
+        "COMPLETED",
+        "FAILED",
+    ] = "IDLE"
+    source_path: str
+    target_path: str | None = None
+    total_bytes: int = 0
+    processed_bytes: int = 0
+    total_files: int = 0
+    processed_files: int = 0
+    progress: float = Field(default=0, ge=0, le=100)
+    error: str | None = None
+    warning: str | None = None
+
+
+class StorageSettingsResponse(BaseModel):
+    storage_root: str
+    migration: StorageMigrationStatusResponse

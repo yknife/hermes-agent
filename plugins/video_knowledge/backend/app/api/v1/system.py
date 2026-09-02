@@ -13,6 +13,8 @@ from plugins.video_knowledge.backend.app.schemas.system import (
     ComponentHealth,
     HealthResponse,
     RuntimeStatusResponse,
+    StorageMigrationRequest,
+    StorageSettingsResponse,
 )
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
 from plugins.video_knowledge.backend.app.services.runtime_service import (
@@ -68,6 +70,18 @@ async def runtime_status(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RuntimeStatusResponse:
     return await RuntimeReadinessService(settings).status()
+
+
+@router.get("/storage", response_model=StorageSettingsResponse)
+async def storage_status(request: Request) -> StorageSettingsResponse:
+    return request.app.state.storage_manager.response()
+
+
+@router.put("/storage", response_model=StorageSettingsResponse, status_code=202)
+async def migrate_storage(
+    payload: StorageMigrationRequest, request: Request
+) -> StorageSettingsResponse:
+    return await request.app.state.storage_manager.start(payload.target_path)
 
 
 @router.put("/asr", response_model=ASRStatusResponse)

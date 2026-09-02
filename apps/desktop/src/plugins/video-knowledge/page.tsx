@@ -3,7 +3,7 @@ import { useState } from 'react'
 
 import { AddContentView } from './add-content'
 import { fetchHealth } from './api'
-import { AsrSettingsView } from './asr-settings'
+import { SystemSettingsView } from './asr-settings'
 import { useVideoKnowledgeI18n } from './i18n'
 import { JobsView } from './jobs'
 import { LibraryView } from './library'
@@ -52,7 +52,7 @@ export function VideoKnowledgePage() {
                 </TabsTrigger>
                 <TabsTrigger value="asr">
                   <Codicon name="settings-gear" />
-                  ASR 设置
+                  系统设置
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -69,6 +69,7 @@ export function VideoKnowledgePage() {
             setCreatedJobId(jobId)
             setView('jobs')
           }}
+          onOpenSystemSettings={() => setView('asr')}
         />
       )}
       {view === 'library' && (
@@ -78,7 +79,7 @@ export function VideoKnowledgePage() {
         />
       )}
       {view === 'jobs' && <JobsView initialJobId={createdJobId} />}
-      {view === 'asr' && <AsrSettingsView />}
+      {view === 'asr' && <SystemSettingsView />}
     </div>
   )
 }

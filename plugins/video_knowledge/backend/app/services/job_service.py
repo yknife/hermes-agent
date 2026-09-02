@@ -620,3 +620,9 @@ class JobQueryService:
         query = query.order_by(JobEvent.id.asc()).limit(limit)
         async with self.database.session() as session:
             return list((await session.scalars(query)).all())
+
+    async def latest_event_id(self) -> str | None:
+        async with self.database.session() as session:
+            return await session.scalar(
+                select(JobEvent.id).order_by(JobEvent.id.desc()).limit(1)
+            )

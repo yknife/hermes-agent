@@ -13,6 +13,11 @@ class AuthenticationRequiredError(MediaToolError):
     retryable = False
 
 
+class MediaUnavailableError(MediaToolError):
+    code = "MEDIA_UNAVAILABLE"
+    retryable = False
+
+
 class RateLimitedError(MediaToolError):
     code = "RATE_LIMITED"
 

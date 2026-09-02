@@ -1,11 +1,15 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import SourceType
-from plugins.video_knowledge.backend.app.domain.errors import MediaDeleteConflictError
+from plugins.video_knowledge.backend.app.domain.errors import (
+    InvalidCookieFileError,
+    MediaDeleteConflictError,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Base,
     Job,
@@ -29,6 +33,7 @@ from plugins.video_knowledge.backend.app.services.media_service import (
     SourceService,
     classify_source_type,
     normalize_url,
+    resolve_cookie_file_path,
 )
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
@@ -71,6 +76,58 @@ def test_classify_source_type_distinguishes_live_rooms_from_videos() -> None:
         classify_source_type("https://www.twitch.tv/videos/123", "twitch")
         == SourceType.VIDEO
     )
+
+
+def test_cookie_file_validation_accepts_netscape_and_rejects_other_text(
+    tmp_path: Path,
+) -> None:
+    valid = tmp_path / "cookies.txt"
+    valid.write_text(
+        "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tname\tvalue\n",
+        encoding="utf-8",
+    )
+    invalid = tmp_path / "notes.txt"
+    invalid.write_text("not a cookie export", encoding="utf-8")
+
+    assert resolve_cookie_file_path(str(valid)) == valid.resolve()
+    with pytest.raises(InvalidCookieFileError, match="Netscape"):
+        resolve_cookie_file_path(str(invalid))
+
+
+def test_ingest_cookie_path_is_persisted_for_worker_but_redacted_from_api(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'cookies-api.db'}"
+    asyncio.run(initialize_schema(database_url))
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    settings = Settings(database_url=database_url, storage_root=tmp_path / "storage")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post(
+            "/api/v1/sources/ingest",
+            json={
+                "url": "https://www.youtube.com/watch?v=06rHoEpiuYY",
+                "cookies_file": str(cookies),
+            },
+        )
+
+    assert response.status_code == 201
+    assert "cookies_file" not in response.json()["job"]["input"]
+
+    async def raw_job_input() -> dict[str, object]:
+        database = Database(database_url)
+        try:
+            async with database.session() as session:
+                raw = await session.scalar(select(Job.input_json))
+                assert raw is not None
+                return json.loads(raw)
+        finally:
+            await database.dispose()
+
+    raw_job_input_value = asyncio.run(raw_job_input())
+    assert raw_job_input_value
+    assert raw_job_input_value["cookies_file"] == str(cookies.resolve())
 
 
 def test_duplicate_ingest_reuses_source_and_job(tmp_path: Path) -> None:
