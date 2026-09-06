@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 from plugins import video_knowledge
 from plugins.video_knowledge import tools as tool_module
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
@@ -327,7 +328,13 @@ async def test_knowledge_tool_handlers_enforce_selected_media_scope(
     assert excluded["count"] == 0
 
 
-def test_plugin_registers_only_bounded_read_only_tool_schemas() -> None:
+@pytest.mark.parametrize("enabled", ["false", "true"])
+def test_plugin_registers_only_bounded_read_only_tool_schemas(
+    monkeypatch, enabled
+) -> None:
+    # Stage 0 must not expose unimplemented mutation tools even when an operator
+    # prepares the future admission flag ahead of the workflow implementation.
+    monkeypatch.setenv("VKC_MESSAGING_INGEST_ENABLED", enabled)
     registrations: list[dict] = []
 
     class Context:
@@ -335,6 +342,10 @@ def test_plugin_registers_only_bounded_read_only_tool_schemas() -> None:
             registrations.append(kwargs)
 
     video_knowledge.register(Context())
+
+    manifest_path = Path(video_knowledge.__file__).parent / "plugin.yaml"
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    assert set(manifest["provides_tools"]) == {item["name"] for item in registrations}
 
     assert {item["name"] for item in registrations} == {
         "get_knowledge_documents",

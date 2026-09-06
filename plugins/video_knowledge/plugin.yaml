@@ -7,3 +7,5 @@ provides_tools:
   - search_videos
   - search_transcript
   - get_segments
+  - search_knowledge
+  - get_knowledge_documents

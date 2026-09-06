@@ -13,7 +13,22 @@ from types import SimpleNamespace
 from typing import Dict
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
+
 from gateway.platforms.base import ProcessingOutcome
+
+
+@pytest.fixture(autouse=True)
+def isolated_feishu_profile(tmp_path):
+    # Tests below clear os.environ, including Windows home-directory variables.
+    # A context-local profile survives that reset and isolates persisted dedup IDs.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(tmp_path)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
 
 try:
     import lark_oapi
@@ -1165,6 +1180,9 @@ class TestAdapterBehavior(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, proxy_vars, clear=False),
+            # Windows also discovers proxies from the registry. This test
+            # exercises direct DNS rebinding, not a user-configured proxy.
+            patch("httpx._utils.getproxies", return_value={}),
             patch("socket.getaddrinfo", side_effect=fake_getaddrinfo),
             patch.object(AutoBackend, "connect_tcp", new=fake_connect_tcp),
             self.assertRaises(SSRFConnectionBlocked),
@@ -2465,5 +2483,3 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
-
-

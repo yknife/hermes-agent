@@ -1,7 +1,8 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -41,6 +42,16 @@ class Settings(BaseSettings):
     asr_chunk_seconds: int = 120
     asr_overlap_seconds: float = 1.5
     auto_analyze: bool = True
+    # Messaging admission policy only; Desktop ingest remains independent.
+    # Stage 0 defines policy, while workflow handlers enforce it in later stages.
+    messaging_ingest_enabled: bool = False
+    messaging_allowed_platforms: list[Literal["feishu"]] = Field(
+        default_factory=lambda: ["feishu"]
+    )
+    messaging_max_active_per_user: int = Field(default=1, ge=1, le=10)
+    messaging_max_submissions_per_user_per_day: int = Field(default=10, ge=1, le=1000)
+    messaging_max_video_duration_seconds: int = Field(default=1800, ge=1, le=86400)
+    messaging_max_video_height: Literal[360, 480, 720, 1080] = 720
     hermes_base_url: str = "http://127.0.0.1:8642/v1"
     hermes_api_mode: str = "chat_completions"
     hermes_model: str = "hermes-agent"
@@ -60,6 +71,18 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+
+    def messaging_ingest_allowed(self, platform: str) -> bool:
+        return (
+            self.messaging_ingest_enabled
+            and platform in self.messaging_allowed_platforms
+        )
+
+    @field_validator("messaging_max_video_height", mode="before")
+    @classmethod
+    def parse_messaging_height(cls, value: object) -> object:
+        # Environment values are strings; integer Literal does not coerce them.
+        return int(value) if isinstance(value, str) and value.isdecimal() else value
 
 
 @lru_cache
