@@ -1,12 +1,125 @@
 import json
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
+from gateway.config import PlatformConfig
+from gateway.platforms.api_server import APIServerAdapter
 from plugins.video_knowledge.backend.hermes_client import (
     HermesClient,
     HermesClientError,
 )
 from plugins.video_knowledge.backend.hermes_client.client import _is_loopback_url
+
+
+@pytest.mark.asyncio
+async def test_reasoning_compatibility_retry_is_bounded():
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            502, json={"error": {"code": "reasoning_disabled_unsupported"}}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        client = HermesClient(
+            "http://hermes.test/v1", client=http_client, max_retries=0
+        )
+        with pytest.raises(HermesClientError):
+            await client.generate_json(
+                system_prompt="Return JSON",
+                user_prompt="Analyze",
+                schema_name="analysis",
+                schema={"type": "object"},
+            )
+    assert len(requests) == 2
+    assert requests[0]["model_options"]["reasoning"] == {"enabled": False}
+    assert requests[1]["model_options"]["reasoning"] == {
+        "enabled": True,
+        "effort": "low",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reasoning_rejected", [False, True])
+async def test_gateway_error_in_reply_triggers_real_json_object_retry(
+    reasoning_rejected,
+):
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    requests = []
+    statuses = []
+
+    async def handle(request):
+        requests.append(await request.json())
+        response = await adapter._handle_chat_completions(request)
+        statuses.append(response.status)
+        return response
+
+    app = web.Application()
+    app.router.add_post("/v1/chat/completions", handle)
+    error = (
+        "HTTP 400: The parameter `response_format.type` is not valid: "
+        "`json_schema` is not supported by this model."
+    )
+    failure = {
+        "final_response": error,
+        "error": error,
+        "failed": True,
+        "completed": False,
+    }
+    success = {"final_response": '{"summary":"ok"}', "completed": True}
+    results = [(failure, {})]
+    if reasoning_rejected:
+        reasoning_error = (
+            "HTTP 400: reasoning_effort `none` is not supported by this model"
+        )
+        results.append((
+            {
+                **failure,
+                "final_response": reasoning_error,
+                "error": reasoning_error,
+            },
+            {},
+        ))
+    results.append((success, {}))
+    with patch.object(
+        adapter,
+        "_run_agent",
+        new=AsyncMock(side_effect=results),
+    ):
+        async with TestServer(app) as server:
+            client = HermesClient(str(server.make_url("/v1")), max_retries=0)
+            try:
+                result = await client.generate_json(
+                    system_prompt="Return a JSON analysis.",
+                    user_prompt="Analyze this transcript.",
+                    schema_name="analysis",
+                    schema={
+                        "type": "object",
+                        "properties": {"summary": {"type": "string"}},
+                        "required": ["summary"],
+                    },
+                )
+            finally:
+                await client.close()
+
+    assert result == {"summary": "ok"}
+    assert statuses == ([502, 502, 200] if reasoning_rejected else [502, 200])
+    assert requests[0]["response_format"]["type"] == "json_schema"
+    assert requests[1]["response_format"] == {"type": "json_object"}
+    assert requests[1]["model_options"]["structured_mode"] is True
+    assert '"required":["summary"]' in requests[1]["messages"][0]["content"]
+    if reasoning_rejected:
+        assert requests[2]["response_format"] == {"type": "json_object"}
+        assert requests[2]["model_options"]["reasoning"] == {
+            "enabled": True,
+            "effort": "low",
+        }
+        assert requests[2]["max_tokens"] == requests[0]["max_tokens"]
+        assert requests[2]["model_options"]["structured_mode"] is True
 
 
 def test_loopback_urls_bypass_system_proxy_detection() -> None:

@@ -2402,15 +2402,20 @@ class TestChatCompletionsAgentIncomplete:
             assert data["error"]["hermes"]["failed"] is True
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("error_in_reply", [False, True])
     async def test_structured_provider_capability_failure_has_machine_code(
-        self, adapter
+        self, adapter, error_in_reply
     ):
+        error = (
+            "HTTP 400: The parameter `response_format.type` is not valid: "
+            "`json_schema` is not supported by this model."
+        )
         mock_result = {
-            "final_response": "",
+            "final_response": error if error_in_reply else "",
             "completed": False,
             "partial": False,
             "failed": True,
-            "error": "HTTP 400: This response_format type is unavailable now",
+            "error": error,
             "messages": [],
             "api_calls": 1,
         }

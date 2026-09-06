@@ -133,6 +133,7 @@ class HermesClient:
         response: httpx.Response | None = None
         retry_attempt = 0
         response_format_fallback_used = False
+        reasoning_fallback_used = False
         while True:
             try:
                 response = await self._client.post(
@@ -145,6 +146,25 @@ class HermesClient:
                 httpx.NetworkError,
                 httpx.HTTPStatusError,
             ) as exc:
+                if (
+                    isinstance(exc, httpx.HTTPStatusError)
+                    and self.api_mode == "chat_completions"
+                    and not reasoning_fallback_used
+                    and self._error_code(exc.response)
+                    == "reasoning_disabled_unsupported"
+                ):
+                    # Some reasoning models cannot disable thinking. Retry once
+                    # with minimal effort, retaining the output cap and whichever
+                    # structured format the previous capability retry selected.
+                    payload = {
+                        **payload,
+                        "model_options": {
+                            **payload["model_options"],
+                            "reasoning": {"enabled": True, "effort": "low"},
+                        },
+                    }
+                    reasoning_fallback_used = True
+                    continue
                 if (
                     isinstance(exc, httpx.HTTPStatusError)
                     and self.api_mode == "chat_completions"
@@ -202,6 +222,15 @@ class HermesClient:
                 "Hermes JSON response must be an object", retryable=False
             )
         return value
+
+    @staticmethod
+    def _error_code(response: httpx.Response) -> str | None:
+        try:
+            body = response.json()
+        except (ValueError, UnicodeDecodeError):
+            return None
+        error = body.get("error") if isinstance(body, dict) else None
+        return error.get("code") if isinstance(error, dict) else None
 
     @staticmethod
     def _response_format_is_unsupported(response: httpx.Response) -> bool:

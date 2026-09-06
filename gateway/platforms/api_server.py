@@ -431,6 +431,18 @@ def _provider_response_format(
     return response_format
 
 
+def _is_reasoning_disabled_unsupported_error(value: Any) -> bool:
+    detail = str(value or "").casefold()
+    return (
+        "reasoning_effort" in detail
+        and re.search(r"\bnone\b", detail) is not None
+        and any(
+            marker in detail
+            for marker in ("not supported", "unsupported", "does not support")
+        )
+    )
+
+
 def _apply_runtime_agent_overrides(
     runtime_kwargs: Dict[str, Any], overrides: Optional[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -5316,14 +5328,30 @@ class APIServerAdapter(BasePlatformAdapter):
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
 
-        # Hard-fail path: no usable assistant text AND a real failure → 5xx
-        # with OpenAI-style error envelope so SDK clients raise instead of
-        # silently rendering the internal failure string as message.content.
-        if not final_response and (is_failed or is_partial):
+        # Non-retryable provider errors can also populate final_response with
+        # their diagnostic text. For structured requests that is not usable
+        # output: expose the capability error so clients can retry with a
+        # supported format instead of trying to parse the diagnostic as JSON.
+        format_unsupported = bool(
+            structured_instruction
+            and (is_failed or is_partial or not completed)
+            and _is_response_format_unavailable_error(raw_err_msg)
+        )
+        reasoning_unsupported = bool(
+            structured_instruction
+            and (is_failed or is_partial or not completed)
+            and _is_reasoning_disabled_unsupported_error(raw_err_msg)
+        )
+        if (
+            format_unsupported
+            or reasoning_unsupported
+            or (not final_response and (is_failed or is_partial))
+        ):
             error_code = (
                 "response_format_unsupported"
-                if structured_instruction
-                and _is_response_format_unavailable_error(raw_err_msg)
+                if format_unsupported
+                else "reasoning_disabled_unsupported"
+                if reasoning_unsupported
                 else "agent_incomplete"
             )
             err_body = _openai_error(
