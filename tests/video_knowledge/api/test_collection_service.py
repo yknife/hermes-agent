@@ -27,7 +27,10 @@ from plugins.video_knowledge.backend.app.services.collection_service import (
 )
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.messaging_tools import (
+    cancel_collection,
     collect_video,
+    get_collection_status,
+    retry_collection,
 )
 from sqlalchemy import func, select
 from tools.invocation_context import ToolInvocationContext, bind_tool_invocation_context
@@ -48,14 +51,14 @@ async def _service(path: Path, **settings):
     )
 
 
-def _origin(user="user-a", message="message-a", chat="chat-a"):
+def _origin(user="user-a", message="message-a", chat="chat-a", thread="thread-a"):
     return CollectionOrigin(
         platform="feishu",
         user_id=user,
         chat_id=chat,
         message_id=message,
         session_id=f"session-{user}",
-        thread_id="thread-a",
+        thread_id=thread,
     )
 
 
@@ -91,7 +94,7 @@ async def test_status_and_cancel_are_owner_scoped_and_use_state_machine(tmp_path
             await service.status(accepted["workflow_id"], _origin(user="user-b"))
         with pytest.raises(CollectionAccessError, match="not accessible"):
             await service.cancel(accepted["workflow_id"], _origin(user="user-b"))
-        cancelled = await service.cancel(accepted["workflow_id"], _origin())
+        cancelled = await service.cancel(None, _origin())
         assert cancelled["status"] == JobStatus.CANCELLED.value
         assert cancelled["cancel_requested"] is True
         async with database.session() as session:
@@ -99,6 +102,93 @@ async def test_status_and_cancel_are_owner_scoped_and_use_state_machine(tmp_path
                 select(func.count()).select_from(JobEvent)
             )
             assert event_count == 2
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_latest_status_is_scoped_to_trusted_conversation(tmp_path):
+    database, service = await _service(
+        tmp_path / "app.db", messaging_max_active_per_user=3
+    )
+    try:
+        first = await service.collect(
+            "https://b23.tv/First123",
+            _origin(message="message-first", thread="thread-a"),
+        )
+        second = await service.collect(
+            "https://b23.tv/Second123",
+            _origin(message="message-second", thread="thread-b"),
+        )
+        first_status = await service.status(
+            None, _origin(message="status-a", thread="thread-a")
+        )
+        second_status = await service.status(
+            None, _origin(message="status-b", thread="thread-b")
+        )
+        assert first_status["workflow_id"] == first["workflow_id"]
+        assert second_status["workflow_id"] == second["workflow_id"]
+        assert first_status["message"] == "任务已排队，等待 Worker 处理。"
+        with pytest.raises(CollectionAccessError, match="not accessible"):
+            await service.status(
+                None,
+                _origin(message="status-other", chat="chat-other", thread=None),
+            )
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_failed_owner_can_retry_latest_once_and_subscriber_cannot(tmp_path):
+    database, service = await _service(tmp_path / "app.db")
+    try:
+        accepted = await service.collect("https://b23.tv/Retry123", _origin())
+        subscriber_origin = _origin(
+            user="user-b", message="message-b", chat="chat-b", thread=None
+        )
+        await service.collect("https://b23.tv/Retry123", subscriber_origin)
+        machine = JobStateMachine(database)
+        claimed = await machine.claim_next("worker-a", 60)
+        await machine.fail(
+            claimed.id,
+            "worker-a",
+            error_code="RATE_LIMITED",
+            error_message="provider details",
+        )
+
+        with pytest.raises(CollectionAccessError, match="not accessible"):
+            await service.retry(accepted["workflow_id"], subscriber_origin)
+
+        retried = await service.retry(None, _origin(message="retry-message"))
+        assert retried["workflow_id"] == accepted["workflow_id"]
+        assert retried["status"] == WorkflowStatus.PENDING.value
+        assert retried["retry_requested"] is True
+        assert "重试已排队" in retried["message"]
+
+        duplicate = await service.retry(accepted["workflow_id"], _origin())
+        assert duplicate["retry_requested"] is False
+
+        claimed_again = await machine.claim_next("worker-b", 60)
+        await machine.fail(
+            claimed_again.id,
+            "worker-b",
+            error_code="RATE_LIMITED",
+            error_message="provider details again",
+        )
+        async with database.session() as session:
+            workflow = await session.get(CollectionWorkflow, accepted["workflow_id"])
+            outbox = list(
+                (
+                    await session.scalars(
+                        select(NotificationOutbox).where(
+                            NotificationOutbox.workflow_id == accepted["workflow_id"]
+                        )
+                    )
+                ).all()
+            )
+            assert workflow.terminal_generation == 1
+            assert len(outbox) == 4
+            assert len({item.idempotency_key for item in outbox}) == 4
     finally:
         await database.dispose()
 
@@ -156,6 +246,9 @@ async def test_tool_requires_bound_context_and_rejects_model_origin(tmp_path):
             accepted = json.loads(
                 await collect_video({"url": "https://b23.tv/AbCd123"})
             )
+            latest = json.loads(await get_collection_status({}))
+            cancelled = json.loads(await cancel_collection({}))
+            retry_rejected = json.loads(await retry_collection({}))
             forged = json.loads(
                 await collect_video({
                     "url": "https://b23.tv/AbCd123",
@@ -163,6 +256,9 @@ async def test_tool_requires_bound_context_and_rejects_model_origin(tmp_path):
                 })
             )
         assert accepted["accepted"] is True
+        assert latest["workflow_id"] == accepted["workflow_id"]
+        assert cancelled["status"] == WorkflowStatus.CANCELLED.value
+        assert retry_rejected["retry_requested"] is False
         assert "error" in forged
     finally:
         reset_hermes_home_override(token)
@@ -261,10 +357,16 @@ async def test_workflow_waits_for_analysis_and_parent_links_survive_restart(tmp_
         assert complete["status"] == WorkflowStatus.SUCCEEDED.value
         assert complete["analysis_complete"] is True
         async with reopened.session() as session:
-            assert await session.scalar(select(func.count(NotificationOutbox.id))) == 1
+            assert await session.scalar(select(func.count(NotificationOutbox.id))) == 2
             assert (
                 await session.scalar(select(func.count(WorkflowSubscription.id))) == 1
             )
+        await JobStateMachine(reopened).retry(ingest.id)
+        async with reopened.session() as session:
+            workflow = await session.get(CollectionWorkflow, accepted["workflow_id"])
+            assert workflow.status == WorkflowStatus.SUCCEEDED.value
+            assert workflow.terminal_generation == 1
+            assert await session.scalar(select(func.count(NotificationOutbox.id))) == 2
     finally:
         await reopened.dispose()
 

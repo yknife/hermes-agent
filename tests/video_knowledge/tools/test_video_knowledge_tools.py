@@ -358,6 +358,7 @@ def test_plugin_registers_only_bounded_read_only_tool_schemas(
         "collect_video",
         "get_collection_status",
         "cancel_collection",
+        "retry_collection",
     }
     assert {item["name"] for item in registrations} == read_only_names | messaging_names
     assert all(item["is_async"] is True for item in registrations)

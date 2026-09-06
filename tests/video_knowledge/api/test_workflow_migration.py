@@ -47,7 +47,8 @@ def test_stage_one_receipt_backfills_workflow_subscription_and_job_links(tmp_pat
     connection = sqlite3.connect(database)
     try:
         workflow = connection.execute(
-            "SELECT ingest_job_id, status FROM collection_workflows WHERE id='workflow-a'"
+            "SELECT ingest_job_id, status, terminal_generation "
+            "FROM collection_workflows WHERE id='workflow-a'"
         ).fetchone()
         subscription = connection.execute(
             "SELECT workflow_id, is_owner FROM workflow_subscriptions"
@@ -63,7 +64,7 @@ def test_stage_one_receipt_backfills_workflow_subscription_and_job_links(tmp_pat
         }
     finally:
         connection.close()
-    assert workflow == ("job-a", "PENDING")
+    assert workflow == ("job-a", "PENDING", 0)
     assert subscription == ("workflow-a", 1)
     assert job == ("workflow-a", None)
     assert "notification_outbox_events" in tables_after_upgrade

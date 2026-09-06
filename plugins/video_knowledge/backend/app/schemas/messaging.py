@@ -1,4 +1,4 @@
-"""Stage-0 argument contracts. These commands are not registered tools yet.
+"""Messaging collection argument contracts.
 
 Origin and authorization must come from trusted invocation context, never
 from model arguments. URL checks here are lexical only; a future admission
@@ -55,10 +55,14 @@ class CollectVideoArguments(BaseModel):
 class CollectionStatusArguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    workflow_id: str = Field(
-        min_length=10, max_length=64, pattern=r"^workflow_[A-Za-z0-9_-]+$"
+    workflow_id: str | None = Field(
+        default=None, min_length=10, max_length=64, pattern=r"^workflow_[A-Za-z0-9_-]+$"
     )
 
 
 class CancelCollectionArguments(CollectionStatusArguments):
+    pass
+
+
+class RetryCollectionArguments(CollectionStatusArguments):
     pass

@@ -15,6 +15,7 @@ from plugins.video_knowledge.backend.app.schemas.messaging import (
     CancelCollectionArguments,
     CollectionStatusArguments,
     CollectVideoArguments,
+    RetryCollectionArguments,
 )
 from plugins.video_knowledge.backend.app.services.collection_service import (
     CollectionAccessError,
@@ -95,9 +96,12 @@ async def _invoke(name, args):
         elif name == "get_collection_status":
             parsed = CollectionStatusArguments.model_validate(args)
             result = await service.status(parsed.workflow_id, origin)
-        else:
+        elif name == "cancel_collection":
             parsed = CancelCollectionArguments.model_validate(args)
             result = await service.cancel(parsed.workflow_id, origin)
+        else:
+            parsed = RetryCollectionArguments.model_validate(args)
+            result = await service.retry(parsed.workflow_id, origin)
         return tool_result(result)
     except ValidationError:
         return tool_error(
@@ -126,6 +130,10 @@ async def cancel_collection(args, **kwargs):
     return await _invoke("cancel_collection", args)
 
 
+async def retry_collection(args, **kwargs):
+    return await _invoke("retry_collection", args)
+
+
 MESSAGING_TOOLS = tuple(
     (
         name,
@@ -147,15 +155,27 @@ MESSAGING_TOOLS = tuple(
         ),
         (
             "get_collection_status",
-            "Read your own collection workflow's authoritative status.",
+            "Read the authoritative stage and progress of your own collection workflow. "
+            "Omit workflow_id for phrases such as '刚才的视频处理到哪里了'; the tool "
+            "then resolves the latest workflow in this trusted conversation.",
             CollectionStatusArguments,
             get_collection_status,
         ),
         (
             "cancel_collection",
-            "Request cancellation of your own collection workflow without deleting media.",
+            "Cancel a collection workflow you own without deleting media. Omit workflow_id "
+            "for phrases such as '取消刚才的视频任务'; the tool then resolves the latest "
+            "owned workflow in this trusted conversation.",
             CancelCollectionArguments,
             cancel_collection,
+        ),
+        (
+            "retry_collection",
+            "Retry your own failed collection workflow. Omit workflow_id for phrases such "
+            "as '重试刚才的视频任务'; the tool then resolves the latest owned workflow in "
+            "this trusted conversation. Repeated calls are idempotent while it is queued.",
+            RetryCollectionArguments,
+            retry_collection,
         ),
     )
 )

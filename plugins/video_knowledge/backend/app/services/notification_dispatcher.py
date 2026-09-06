@@ -82,6 +82,10 @@ class _NotificationView:
     media: MediaItem | None
     job: Job | None
     documents: dict[str, KnowledgeDocument]
+    terminal_status: str
+    terminal_error_code: str | None
+    terminal_stage: str | None
+    terminal_media_id: str | None
 
 
 def _safe_code(value: str | None, default: str = "UNKNOWN_ERROR") -> str:
@@ -181,14 +185,15 @@ def _pack_sections(sections: list[str], limit: int = _TEXT_LIMIT) -> list[str]:
 
 def render_notification(view: _NotificationView) -> list[NotificationPart]:
     workflow = view.workflow
+    terminal_status = view.terminal_status
     media = view.media
     docs = view.documents
     summary_doc = docs.get("summary")
     summary = _json(summary_doc.content_json, {}) if summary_doc else {}
     summary = summary if isinstance(summary, dict) else {}
-    degraded = bool(summary.get("degraded")) or workflow.status == "PARTIAL"
+    degraded = bool(summary.get("degraded")) or terminal_status == "PARTIAL"
 
-    if workflow.status in {"SUCCEEDED", "PARTIAL"} and media is not None:
+    if terminal_status in {"SUCCEEDED", "PARTIAL"} and media is not None:
         heading = (
             "## ⚠️ 视频知识分析已完成（含兜底内容）"
             if degraded
@@ -270,25 +275,28 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
             ])
         )
     else:
-        error_code = _safe_code(workflow.terminal_reason, "TASK_FAILED")
-        stage = _safe_code(view.job.stage if view.job else None, "UNKNOWN_STAGE")
-        retryable = workflow.status == "FAILED"
+        error_code = _safe_code(view.terminal_error_code, "TASK_FAILED")
+        stage = _safe_code(view.terminal_stage, "UNKNOWN_STAGE")
+        retryable = terminal_status == "FAILED"
         heading = (
             "## ⏹️ 视频知识任务已取消"
-            if workflow.status == "CANCELLED"
+            if terminal_status == "CANCELLED"
             else "## ❌ 视频知识任务失败"
         )
-        sections = [
-            "\n".join([
-                heading,
-                f"错误码：{error_code}",
-                f"当前阶段：{stage}",
-                f"是否可重试：{'是' if retryable else '否'}",
-                f"处理建议：{_failure_advice(error_code, workflow.status)}",
-                f"Workflow ID：{workflow.id}",
-                f"Media ID：{workflow.media_id or '未生成'}",
-            ])
+        lines = [
+            heading,
+            f"错误码：{error_code}",
+            f"当前阶段：{stage}",
+            f"是否可重试：{'是' if retryable else '否'}",
+            f"处理建议：{_failure_advice(error_code, terminal_status)}",
+            f"Workflow ID：{workflow.id}",
+            f"Media ID：{view.terminal_media_id or '未生成'}",
         ]
+        if retryable:
+            lines.append(
+                f"重试指令：回复“重试刚才的视频任务”，或回复“重试任务 {workflow.id}”。"
+            )
+        sections = ["\n".join(lines)]
 
     bodies = _pack_sections(sections)
     total = len(bodies)
@@ -435,13 +443,33 @@ class NotificationDispatcher:
             subscription = await session.get(WorkflowSubscription, item.subscription_id)
             if workflow is None or subscription is None:
                 raise RuntimeError("Notification references missing workflow state")
+            payload = _json(item.payload_json, {})
+            payload = payload if isinstance(payload, dict) else {}
+            terminal_status = str(payload.get("status") or workflow.status)
+            if terminal_status not in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}:
+                terminal_status = workflow.status
+            terminal_error_code = (
+                payload.get("error_code")
+                if "error_code" in payload
+                else workflow.terminal_reason
+            )
+            terminal_media_id = (
+                payload.get("media_id") if "media_id" in payload else workflow.media_id
+            )
             media = (
-                await session.get(MediaItem, workflow.media_id)
-                if workflow.media_id
+                await session.get(MediaItem, terminal_media_id)
+                if terminal_media_id
                 else None
             )
             job_id = workflow.analysis_job_id or workflow.ingest_job_id
             job = await session.get(Job, job_id) if job_id else None
+            terminal_stage = (
+                payload.get("stage")
+                if "stage" in payload
+                else job.stage
+                if job
+                else None
+            )
             documents: dict[str, KnowledgeDocument] = {}
             if media is not None:
                 rows = list(
@@ -462,7 +490,16 @@ class NotificationDispatcher:
                 for row in rows:
                     documents.setdefault(row.document_type, row)
             return _NotificationView(
-                item, workflow, subscription, media, job, documents
+                item,
+                workflow,
+                subscription,
+                media,
+                job,
+                documents,
+                terminal_status,
+                str(terminal_error_code) if terminal_error_code else None,
+                str(terminal_stage) if terminal_stage else None,
+                str(terminal_media_id) if terminal_media_id else None,
             )
 
     async def _alert_dead(self, view: _NotificationView, error_code: str) -> None:

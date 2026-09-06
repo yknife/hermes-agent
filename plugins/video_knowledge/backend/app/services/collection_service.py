@@ -63,18 +63,54 @@ class CollectionService:
 
     @staticmethod
     async def _subscription(
-        session: AsyncSession, workflow_id: str, origin: CollectionOrigin
+        session: AsyncSession,
+        workflow_id: str | None,
+        origin: CollectionOrigin,
+        *,
+        owner_only: bool = False,
     ) -> WorkflowSubscription | None:
-        return await session.scalar(
-            select(WorkflowSubscription)
-            .where(
-                WorkflowSubscription.workflow_id == workflow_id,
-                WorkflowSubscription.platform == origin.platform,
-                WorkflowSubscription.user_id == origin.user_id,
-            )
-            .order_by(WorkflowSubscription.created_at.asc())
-            .limit(1)
+        query = select(WorkflowSubscription).where(
+            WorkflowSubscription.platform == origin.platform,
+            WorkflowSubscription.user_id == origin.user_id,
         )
+        if workflow_id is not None:
+            query = query.where(WorkflowSubscription.workflow_id == workflow_id)
+        else:
+            query = query.where(WorkflowSubscription.chat_id == origin.chat_id)
+            query = query.where(
+                WorkflowSubscription.thread_id == origin.thread_id
+                if origin.thread_id is not None
+                else WorkflowSubscription.thread_id.is_(None)
+            )
+        if owner_only:
+            query = query.where(WorkflowSubscription.is_owner.is_(True))
+        return await session.scalar(
+            query.order_by(
+                WorkflowSubscription.created_at.desc(),
+                WorkflowSubscription.id.desc(),
+            ).limit(1)
+        )
+
+    @classmethod
+    async def _resolve_workflow(
+        cls,
+        session: AsyncSession,
+        workflow_id: str | None,
+        origin: CollectionOrigin,
+        *,
+        owner_only: bool = False,
+    ) -> CollectionWorkflow:
+        subscription = await cls._subscription(
+            session, workflow_id, origin, owner_only=owner_only
+        )
+        workflow = (
+            await session.get(CollectionWorkflow, subscription.workflow_id)
+            if subscription is not None
+            else None
+        )
+        if workflow is None:
+            raise CollectionAccessError("Collection is not accessible.")
+        return workflow
 
     @staticmethod
     def _job_id(workflow: CollectionWorkflow) -> str | None:
@@ -284,51 +320,107 @@ class CollectionService:
             "status": workflow.status,
         }
 
-    async def status(self, workflow_id: str, origin: CollectionOrigin) -> dict:
+    @staticmethod
+    def _status_message(
+        workflow_status: str,
+        job_status: str | None,
+        stage: str,
+        progress: float,
+        cancel_requested: bool,
+    ) -> str:
+        if cancel_requested and workflow_status not in {
+            WorkflowStatus.CANCELLED.value,
+            WorkflowStatus.FAILED.value,
+        }:
+            return "任务正在取消，媒体与已有结果会保留。"
+        if workflow_status == WorkflowStatus.SUCCEEDED.value:
+            return "视频采集和知识分析已完成。"
+        if workflow_status == WorkflowStatus.PARTIAL.value:
+            return "任务已完成，但部分分析使用了 Transcript 兜底。"
+        if workflow_status == WorkflowStatus.FAILED.value:
+            return "任务失败；排除错误原因后可以重试。"
+        if workflow_status == WorkflowStatus.CANCELLED.value:
+            return "任务已取消，媒体与已有结果仍然保留。"
+        if job_status == "RETRY_WAIT":
+            return "任务遇到临时错误，正在等待自动重试。"
+        if workflow_status == WorkflowStatus.PENDING.value:
+            return "任务已排队，等待 Worker 处理。"
+        label = (
+            "知识分析"
+            if workflow_status == WorkflowStatus.ANALYZING.value
+            else "视频采集"
+        )
+        return f"正在进行{label}（{stage}），当前进度 {progress:.0f}%。"
+
+    async def status(self, workflow_id: str | None, origin: CollectionOrigin) -> dict:
         async with self.database.session() as session:
-            subscription = await self._subscription(session, workflow_id, origin)
-            workflow = await session.get(CollectionWorkflow, workflow_id)
-            if subscription is None or workflow is None:
-                raise CollectionAccessError("Collection is not accessible.")
+            workflow = await self._resolve_workflow(session, workflow_id, origin)
             job_id = self._job_id(workflow)
             job = await session.get(Job, job_id) if job_id else None
+            stage = job.stage if job else "DONE"
+            progress = max(0.0, min(100.0, float(job.progress if job else 100.0)))
+            cancel_requested = (
+                workflow.status == WorkflowStatus.CANCELLED.value
+                or bool(job and job.cancel_requested_at)
+            )
             return {
                 "workflow_id": workflow.id,
                 "job_id": job.id if job else None,
                 "job_type": job.type if job else None,
                 "status": workflow.status,
                 "job_status": job.status if job else None,
-                "stage": job.stage if job else "DONE",
-                "progress": job.progress if job else 100.0,
+                "stage": stage,
+                "progress": progress,
                 "media_id": workflow.media_id or (job.media_id if job else None),
                 "error_code": workflow.terminal_reason,
-                "cancel_requested": (
-                    workflow.status == WorkflowStatus.CANCELLED.value
-                    or bool(job and job.cancel_requested_at)
-                ),
+                "cancel_requested": cancel_requested,
                 "analysis_complete": (
                     workflow.status == WorkflowStatus.SUCCEEDED.value
                 ),
                 "cache_hit": workflow.ingest_job_id is None,
+                "retry_available": workflow.status == WorkflowStatus.FAILED.value,
+                "message": self._status_message(
+                    workflow.status,
+                    job.status if job else None,
+                    stage,
+                    progress,
+                    cancel_requested,
+                ),
             }
 
-    async def cancel(self, workflow_id: str, origin: CollectionOrigin) -> dict:
+    async def cancel(self, workflow_id: str | None, origin: CollectionOrigin) -> dict:
         async with self.database.session() as session:
-            owner = await session.scalar(
-                select(WorkflowSubscription.id).where(
-                    WorkflowSubscription.workflow_id == workflow_id,
-                    WorkflowSubscription.platform == origin.platform,
-                    WorkflowSubscription.user_id == origin.user_id,
-                    WorkflowSubscription.is_owner.is_(True),
-                )
+            workflow = await self._resolve_workflow(
+                session, workflow_id, origin, owner_only=True
             )
-            if owner is None:
-                raise CollectionAccessError("Collection is not accessible.")
-        current = await self.status(workflow_id, origin)
+        current = await self.status(workflow.id, origin)
         if WorkflowStatus(current["status"]).terminal or current["job_id"] is None:
             return current
         try:
             await self.jobs.request_cancel(current["job_id"], actor="messaging")
         except JobInvalidTransitionError:
             pass
-        return await self.status(workflow_id, origin)
+        return await self.status(workflow.id, origin)
+
+    async def retry(self, workflow_id: str | None, origin: CollectionOrigin) -> dict:
+        async with self.database.session() as session:
+            workflow = await self._resolve_workflow(
+                session, workflow_id, origin, owner_only=True
+            )
+            job_id = self._job_id(workflow)
+            failed = workflow.status == WorkflowStatus.FAILED.value
+        if not failed or job_id is None:
+            current = await self.status(workflow.id, origin)
+            current["retry_requested"] = False
+            current["message"] = "当前任务不是可重试的失败状态。"
+            return current
+        try:
+            await self.jobs.retry(job_id, actor="messaging")
+            requested = True
+        except JobInvalidTransitionError:
+            requested = False
+        current = await self.status(workflow.id, origin)
+        current["retry_requested"] = requested
+        if requested:
+            current["message"] = "重试已排队；任务结束后会向当前飞书会话推送新结果。"
+        return current

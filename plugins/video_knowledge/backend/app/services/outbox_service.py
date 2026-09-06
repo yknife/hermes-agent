@@ -13,6 +13,7 @@ from plugins.video_knowledge.backend.app.domain.enums import (
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     CollectionWorkflow,
+    Job,
     NotificationOutbox,
     NotificationOutboxEvent,
     WorkflowSubscription,
@@ -76,17 +77,29 @@ async def queue_terminal_notifications(
     )
     queued = 0
     now = utc_now()
+    job_id = workflow.analysis_job_id or workflow.ingest_job_id
+    job_stage = None
+    if job_id:
+        job = await session.get(Job, job_id)
+        job_stage = job.stage if job else None
     payload = json.dumps(
         {
             "workflow_id": workflow.id,
             "status": workflow.status,
             "media_id": workflow.media_id,
             "error_code": workflow.terminal_reason,
+            "stage": job_stage,
+            "terminal_generation": workflow.terminal_generation,
         },
         ensure_ascii=False,
         separators=(",", ":"),
     )
     for subscription in subscriptions:
+        terminal_key = (
+            "terminal"
+            if workflow.terminal_generation == 0
+            else f"terminal:{workflow.terminal_generation}"
+        )
         item_id = new_id("notification")
         statement = (
             sqlite_insert(NotificationOutbox)
@@ -98,7 +111,7 @@ async def queue_terminal_notifications(
                 status=NotificationStatus.PENDING.value,
                 attempt_count=0,
                 next_attempt_at=now,
-                idempotency_key=f"{workflow.id}:{subscription.id}:terminal",
+                idempotency_key=f"{workflow.id}:{subscription.id}:{terminal_key}",
                 payload_json=payload,
                 created_at=now,
                 updated_at=now,

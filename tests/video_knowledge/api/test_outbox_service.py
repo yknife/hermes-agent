@@ -86,6 +86,8 @@ async def test_job_terminal_transaction_projects_one_outbox_per_subscription(tmp
                 "status": "FAILED",
                 "media_id": None,
                 "error_code": "RATE_LIMITED",
+                "stage": "CREATED",
+                "terminal_generation": 0,
             }
             assert "remote details" not in items[0].payload_json
 
@@ -99,7 +101,24 @@ async def test_job_terminal_transaction_projects_one_outbox_per_subscription(tmp
             error_message="still limited",
         )
         async with database.session() as session:
-            assert await session.scalar(select(func.count(NotificationOutbox.id))) == 1
+            items = list(
+                (
+                    await session.scalars(
+                        select(NotificationOutbox).order_by(
+                            NotificationOutbox.created_at,
+                            NotificationOutbox.id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(items) == 2
+            assert {item.idempotency_key for item in items} == {
+                f"{accepted['workflow_id']}:subscription_"
+                f"{CollectionService._inbound_key(origin)}:terminal",
+                f"{accepted['workflow_id']}:subscription_"
+                f"{CollectionService._inbound_key(origin)}:terminal:1",
+            }
+            assert json.loads(items[-1].payload_json)["terminal_generation"] == 1
     finally:
         await database.dispose()
 

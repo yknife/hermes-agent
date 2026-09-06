@@ -79,6 +79,7 @@ class CollectionWorkflow(Base):
     )
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     terminal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    terminal_generation: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

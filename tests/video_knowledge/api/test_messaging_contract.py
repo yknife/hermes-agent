@@ -4,6 +4,7 @@ from plugins.video_knowledge.backend.app.schemas.messaging import (
     CancelCollectionArguments,
     CollectionStatusArguments,
     CollectVideoArguments,
+    RetryCollectionArguments,
 )
 from pydantic import ValidationError
 
@@ -111,9 +112,15 @@ def test_model_arguments_cannot_supply_authority_or_execution_options(field):
 
 
 @pytest.mark.parametrize(
-    "contract", [CollectionStatusArguments, CancelCollectionArguments]
+    "contract",
+    [
+        CollectionStatusArguments,
+        CancelCollectionArguments,
+        RetryCollectionArguments,
+    ],
 )
-def test_status_and_cancel_accept_only_workflow_identity(contract):
+def test_conversation_actions_accept_optional_workflow_identity_only(contract):
+    assert contract().workflow_id is None
     assert contract(workflow_id="workflow_fixture").workflow_id == "workflow_fixture"
     for payload in (
         {"workflow_id": "../state.db"},

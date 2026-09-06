@@ -397,6 +397,19 @@ class JobStateMachine:
                     "只有终态任务可以重试",
                     details={"job_id": job.id, "status": job.status},
                 )
+            if job.workflow_id:
+                workflow = await session.get(CollectionWorkflow, job.workflow_id)
+                authoritative_job_id = (
+                    workflow.analysis_job_id or workflow.ingest_job_id
+                    if workflow is not None
+                    else None
+                )
+                if (
+                    workflow is not None
+                    and authoritative_job_id == job.id
+                    and WorkflowStatus(workflow.status).terminal
+                ):
+                    workflow.terminal_generation += 1
             old_status = current
             job.status = JobStatus.PENDING.value
             job.stage = JobStage.CREATED.value

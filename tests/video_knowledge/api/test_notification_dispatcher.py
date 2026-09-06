@@ -286,8 +286,44 @@ async def test_failure_renderer_exposes_only_safe_code_stage_and_advice(tmp_path
         assert "当前阶段：ANALYZING" in rendered
         assert "是否可重试：是" in rendered
         assert "检查 Hermes 模型配置" in rendered
+        assert "重试刚才的视频任务" in rendered
         assert "private" not in rendered
         assert "secret-value" not in rendered
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pending_retry_does_not_rewrite_earlier_terminal_notification(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        item_id = await _seed(database)
+        async with database.session() as session, session.begin():
+            outbox = await session.get(NotificationOutbox, item_id)
+            outbox.payload_json = json.dumps({
+                "status": "FAILED",
+                "error_code": "RATE_LIMITED",
+                "stage": "ACQUIRING_MEDIA",
+                "media_id": None,
+                "terminal_generation": 0,
+            })
+            workflow = await session.get(CollectionWorkflow, "workflow-1")
+            workflow.status = "ANALYZING"
+            workflow.terminal_reason = None
+            job = await session.get(Job, "job-1")
+            job.status = "PENDING"
+            job.stage = "CREATED"
+
+        dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
+        rendered = "\n".join(
+            part.content
+            for part in render_notification(await dispatcher._load_view(item_id))
+        )
+        assert "视频知识任务失败" in rendered
+        assert "错误码：RATE_LIMITED" in rendered
+        assert "当前阶段：ACQUIRING_MEDIA" in rendered
+        assert "Media ID：未生成" in rendered
+        assert "正在进行" not in rendered
     finally:
         await database.dispose()
 
