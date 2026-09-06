@@ -40,6 +40,56 @@ class TestTurnContext:
         assert b.repeat_count == [0]
         assert b._cleanup_msg_ids == []
 
+    def test_run_sync_binds_trusted_source_for_tool_dispatch(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.run import TurnRunner
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from tools.invocation_context import get_tool_invocation_context
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-a",
+            user_id="user-a",
+            message_id="source-message",
+            thread_id="thread-a",
+        )
+        ctx = TurnContext(
+            source=source,
+            session_id="session-a",
+            event_message_id="event-message",
+        )
+
+        class Runner:
+            @staticmethod
+            def _is_user_authorized(value):
+                return value is source
+
+        captured = {}
+
+        def inner(self):
+            captured["context"] = get_tool_invocation_context()
+            return {"final_response": "ok"}
+
+        monkeypatch.setattr(TurnRunner, "_run_sync_with_tool_context", inner)
+        token = set_hermes_home_override(tmp_path)
+        try:
+            assert TurnRunner(Runner(), ctx).run_sync()["final_response"] == "ok"
+        finally:
+            reset_hermes_home_override(token)
+        invocation = captured["context"]
+        assert invocation.platform == "feishu"
+        assert invocation.chat_id == "chat-a"
+        assert invocation.thread_id == "thread-a"
+        assert invocation.message_id == "event-message"
+        assert invocation.user_id == "user-a"
+        assert invocation.session_id == "session-a"
+        assert invocation.authorized is True
+        assert get_tool_invocation_context() is None
+
     def test_shared_containers_visible_to_outer_scope(self):
         # The outer body and the runner share the SAME list objects, so
         # mutation through the ctx is visible to locals captured elsewhere.
@@ -50,6 +100,27 @@ class TestTurnContext:
 
 
 class TestTurnRunner:
+    def test_messaging_toolset_is_scoped_to_feishu_turns(self):
+        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.tools_config import (
+            _get_platform_tools,
+            _toolset_allowed_for_platform,
+        )
+
+        assert _toolset_allowed_for_platform("video_knowledge_messaging", "feishu")
+        assert not _toolset_allowed_for_platform(
+            "video_knowledge_messaging", "api_server"
+        )
+        assert not _toolset_allowed_for_platform(
+            "video_knowledge_messaging", "telegram"
+        )
+        discover_plugins()
+        assert "video_knowledge_messaging" in _get_platform_tools({}, "feishu")
+        assert "video_knowledge_messaging" not in _get_platform_tools(
+            {}, "api_server"
+        )
+        assert "video_knowledge_messaging" not in _get_platform_tools({}, "telegram")
+
     def test_methods_exist_and_bind(self):
         from gateway.run import TurnRunner
 

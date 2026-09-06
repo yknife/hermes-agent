@@ -31,6 +31,7 @@ from plugins.video_knowledge.backend.media_adapters import (
     YtDlpAdapter,
 )
 from plugins.video_knowledge.backend.media_adapters.errors import (
+    InvalidMediaError,
     SubtitleNotFoundError,
     SubtitleParseError,
 )
@@ -52,6 +53,21 @@ DEMO_STAGES: tuple[tuple[JobStage, float, str], ...] = (
     (JobStage.INDEXING, 94.0, "模拟建立索引"),
     (JobStage.FINALIZING, 99.0, "正在完成任务"),
 )
+
+
+def enforce_messaging_duration_limit(probe: MediaProbe, payload: dict) -> None:
+    raw_limit = payload.get("messaging_max_duration_seconds")
+    if raw_limit is None:
+        return
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 0
+    duration = probe.duration_seconds
+    if limit <= 0 or duration is None or duration <= 0:
+        raise InvalidMediaError("消息采集无法确认视频时长")
+    if duration > limit:
+        raise InvalidMediaError("视频时长超过消息采集限制")
 
 
 class DemoPipeline:
@@ -207,6 +223,7 @@ class IngestVideoPipeline:
                 )
                 if probe.is_live:
                     raise ValueError("直播地址请使用直播采集任务")
+                enforce_messaging_duration_limit(probe, payload)
             await self.media_service.update_source_probe(job.source_id, probe)
         temp_dir = self.storage_root / "temp" / job.id
         if job.media_id is None:

@@ -32,6 +32,31 @@ class AppSetting(Base):
     )
 
 
+class CollectionRequest(Base):
+    """Stage-1 durable admission receipt; origin never enters public JobRead."""
+
+    __tablename__ = "collection_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "platform", "chat_id", "message_id", name="uq_collection_origin"
+        ),
+        Index("ix_collection_request_user", "platform", "user_id", "created_at"),
+    )
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    ingest_job_id: Mapped[str] = mapped_column(
+        ForeignKey("jobs.id", ondelete="RESTRICT")
+    )
+    platform: Mapped[str] = mapped_column(String(32))
+    user_id: Mapped[str] = mapped_column(String(255))
+    chat_id: Mapped[str] = mapped_column(String(255))
+    thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message_id: Mapped[str] = mapped_column(String(255))
+    session_id: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Source(Base):
     __tablename__ = "sources"
     __table_args__ = (

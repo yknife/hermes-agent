@@ -76,7 +76,20 @@ class JobStateMachine:
         actor: str = "api",
         source_id: str | None = None,
         media_id: str | None = None,
+        session: AsyncSession | None = None,
     ) -> Job:
+        if session is None:
+            async with self.database.session() as transaction, transaction.begin():
+                return await self.create(
+                    job_type=job_type,
+                    priority=priority,
+                    max_attempts=max_attempts,
+                    input_data=input_data,
+                    actor=actor,
+                    source_id=source_id,
+                    media_id=media_id,
+                    session=transaction,
+                )
         now = utc_now()
         job = Job(
             id=new_id("job"),
@@ -92,17 +105,16 @@ class JobStateMachine:
             source_id=source_id,
             media_id=media_id,
         )
-        async with self.database.session() as session, session.begin():
-            session.add(job)
-            await session.flush()
-            await self._add_event(
-                session,
-                job,
-                event_type=JobEventType.CREATED,
-                from_status=None,
-                message="任务已创建",
-                actor=actor,
-            )
+        session.add(job)
+        await session.flush()
+        await self._add_event(
+            session,
+            job,
+            event_type=JobEventType.CREATED,
+            from_status=None,
+            message="任务已创建",
+            actor=actor,
+        )
         return job
 
     async def claim_next(self, worker_id: str, lease_seconds: float) -> Job | None:

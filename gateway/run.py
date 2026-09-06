@@ -5201,6 +5201,33 @@ class TurnRunner:
             _fut.add_done_callback(_track_status_id)
 
     def run_sync(self):
+        from tools.invocation_context import (
+            bind_tool_invocation_context,
+            gateway_tool_invocation_context,
+        )
+
+        ctx = self._ctx
+        source = ctx.source
+        # This entry runs after gateway admission. Recheck ACL and exclude bots
+        # and synthetic turns; none of these identity fields come from the LLM.
+        authorize = getattr(self._runner, "_is_user_authorized", None)
+        authorized = bool(
+            callable(authorize)
+            and authorize(source)
+            and not getattr(source, "is_bot", False)
+            and not ctx.persist_user_display_kind
+        )
+        context = gateway_tool_invocation_context(
+            source=source,
+            profile_home=get_hermes_home(),
+            session_id=ctx.session_id,
+            event_message_id=ctx.event_message_id,
+            authorized=authorized,
+        )
+        with bind_tool_invocation_context(context):
+            return self._run_sync_with_tool_context()
+
+    def _run_sync_with_tool_context(self):
         ctx = self._ctx
         # Historical note: as a nested closure this body declared
         # `nonlocal message` because the conditional re-assignments below

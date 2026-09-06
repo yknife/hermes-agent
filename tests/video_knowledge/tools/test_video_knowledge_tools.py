@@ -347,21 +347,34 @@ def test_plugin_registers_only_bounded_read_only_tool_schemas(
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     assert set(manifest["provides_tools"]) == {item["name"] for item in registrations}
 
-    assert {item["name"] for item in registrations} == {
+    read_only_names = {
         "get_knowledge_documents",
         "search_videos",
         "search_knowledge",
         "search_transcript",
         "get_segments",
     }
-    assert all(item["toolset"] == "video_knowledge" for item in registrations)
+    messaging_names = {
+        "collect_video",
+        "get_collection_status",
+        "cancel_collection",
+    }
+    assert {item["name"] for item in registrations} == read_only_names | messaging_names
     assert all(item["is_async"] is True for item in registrations)
-    schemas = json.dumps([item["schema"] for item in registrations]).casefold()
+    read_only = [item for item in registrations if item["name"] in read_only_names]
+    messaging = [item for item in registrations if item["name"] in messaging_names]
+    assert all(item["toolset"] == "video_knowledge" for item in read_only)
+    assert all(item["toolset"] == "video_knowledge_messaging" for item in messaging)
+    assert all(item.get("check_fn") is None for item in registrations)
+    schemas = json.dumps([item["schema"] for item in read_only]).casefold()
     assert "media_ids" in schemas
     assert "filesystem" in schemas
     assert '"path"' not in schemas
     assert '"url"' not in schemas
     assert '"command"' not in schemas
+    messaging_schemas = json.dumps([item["schema"] for item in messaging]).casefold()
+    for forbidden in ("chat_id", "thread_id", "message_id", "user_id", "profile"):
+        assert forbidden not in messaging_schemas
 
 
 def test_full_knowledge_documents_are_bounded_for_chat_context() -> None:

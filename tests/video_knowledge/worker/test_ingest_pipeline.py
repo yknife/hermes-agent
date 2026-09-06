@@ -31,6 +31,7 @@ from plugins.video_knowledge.backend.media_adapters import (
     SubtitleTrack,
     YtDlpAdapter,
 )
+from plugins.video_knowledge.backend.media_adapters.errors import InvalidMediaError
 from plugins.video_knowledge.backend.media_adapters.models import MediaFileInfo
 from plugins.video_knowledge.backend.transcript import (
     ASRChunkResult,
@@ -40,8 +41,37 @@ from plugins.video_knowledge.backend.transcript import (
 )
 from plugins.video_knowledge.backend.worker.asr_pipeline import ASRPipeline
 from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
-from plugins.video_knowledge.backend.worker.pipeline import IngestVideoPipeline
+from plugins.video_knowledge.backend.worker.pipeline import (
+    IngestVideoPipeline,
+    enforce_messaging_duration_limit,
+)
 from sqlalchemy import select
+
+
+def test_messaging_duration_limit_requires_known_bounded_duration() -> None:
+    payload = {"messaging_max_duration_seconds": 60}
+    enforce_messaging_duration_limit(
+        MediaProbe(
+            external_id="ok",
+            title="ok",
+            webpage_url="https://example.test",
+            platform="fixture",
+            duration_seconds=60,
+        ),
+        payload,
+    )
+    for duration in (None, 0, 61):
+        with pytest.raises(InvalidMediaError):
+            enforce_messaging_duration_limit(
+                MediaProbe(
+                    external_id="bad",
+                    title="bad",
+                    webpage_url="https://example.test",
+                    platform="fixture",
+                    duration_seconds=duration,
+                ),
+                payload,
+            )
 
 
 class FakeDownloader(YtDlpAdapter):
