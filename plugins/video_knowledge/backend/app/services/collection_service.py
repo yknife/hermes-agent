@@ -16,7 +16,6 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Job,
     KnowledgeDocument,
     MediaItem,
-    NotificationOutbox,
     Source,
     WorkflowSubscription,
 )
@@ -28,6 +27,9 @@ from plugins.video_knowledge.backend.app.services.job_service import (
     utc_now,
 )
 from plugins.video_knowledge.backend.app.services.media_service import normalize_url
+from plugins.video_knowledge.backend.app.services.outbox_service import (
+    queue_terminal_notifications,
+)
 
 
 @dataclass(frozen=True, repr=False)
@@ -229,7 +231,7 @@ class CollectionService:
                 session.add(subscription)
                 await session.flush()
                 if WorkflowStatus(workflow.status).terminal:
-                    self._queue_cached_terminal(session, workflow, subscription)
+                    await queue_terminal_notifications(session, workflow)
                 await session.commit()
                 return self._accepted(workflow, reused=reused, cache_hit=cache_hit)
             except BaseException:
@@ -268,25 +270,6 @@ class CollectionService:
             or active >= self.settings.messaging_max_active_per_user
         ):
             raise CollectionAccessError("Messaging collection quota exceeded.")
-
-    @staticmethod
-    def _queue_cached_terminal(
-        session: AsyncSession,
-        workflow: CollectionWorkflow,
-        subscription: WorkflowSubscription,
-    ) -> None:
-        session.add(
-            NotificationOutbox(
-                id=new_id("notification"),
-                workflow_id=workflow.id,
-                subscription_id=subscription.id,
-                notification_type="WORKFLOW_TERMINAL",
-                status="PENDING",
-                next_attempt_at=utc_now(),
-                idempotency_key=f"{workflow.id}:{subscription.id}:terminal",
-                payload_json="{}",
-            )
-        )
 
     @classmethod
     def _accepted(

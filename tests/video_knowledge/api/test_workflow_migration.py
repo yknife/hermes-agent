@@ -55,11 +55,18 @@ def test_stage_one_receipt_backfills_workflow_subscription_and_job_links(tmp_pat
         job = connection.execute(
             "SELECT workflow_id, parent_job_id FROM jobs WHERE id='job-a'"
         ).fetchone()
+        tables_after_upgrade = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
     finally:
         connection.close()
     assert workflow == ("job-a", "PENDING")
     assert subscription == ("workflow-a", 1)
     assert job == ("workflow-a", None)
+    assert "notification_outbox_events" in tables_after_upgrade
 
     command.downgrade(config, "20260906_0007")
     connection = sqlite3.connect(database)
@@ -78,5 +85,57 @@ def test_stage_one_receipt_backfills_workflow_subscription_and_job_links(tmp_pat
     assert "collection_workflows" not in tables
     assert "workflow_subscriptions" not in tables
     assert "notification_outbox" not in tables
+    assert "notification_outbox_events" not in tables
     assert "workflow_id" not in job_columns
     assert "parent_job_id" not in job_columns
+
+
+def test_stage_three_migration_backfills_existing_outbox_event(tmp_path):
+    database = tmp_path / "outbox-migration.db"
+    config = _config(database)
+    command.upgrade(config, "20260906_0008")
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "INSERT INTO sources "
+            "(id, type, platform, url, canonical_url, enabled, config_json) "
+            "VALUES ('source-a', 'VIDEO', 'bilibili', 'https://b23.tv/A', "
+            "'https://b23.tv/A', 1, '{}')"
+        )
+        connection.execute(
+            "INSERT INTO collection_workflows "
+            "(id, source_id, status) VALUES ('workflow-a', 'source-a', 'SUCCEEDED')"
+        )
+        connection.execute(
+            "INSERT INTO workflow_subscriptions "
+            "(id, workflow_id, platform, user_id, chat_id, message_id, session_id, "
+            "inbound_idempotency_key, delivery_policy, is_owner) VALUES "
+            "('subscription-a', 'workflow-a', 'feishu', 'user-a', 'chat-a', "
+            "'message-a', 'session-a', 'key-a', 'TERMINAL', 1)"
+        )
+        connection.execute(
+            "INSERT INTO notification_outbox "
+            "(id, workflow_id, subscription_id, notification_type, status, "
+            "attempt_count, next_attempt_at, idempotency_key, payload_json) VALUES "
+            "('outbox-a', 'workflow-a', 'subscription-a', 'WORKFLOW_TERMINAL', "
+            "'PENDING', 0, CURRENT_TIMESTAMP, 'workflow-a:subscription-a:terminal', '{}')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    command.upgrade(config, "head")
+    connection = sqlite3.connect(database)
+    try:
+        event = connection.execute(
+            "SELECT outbox_id, workflow_id, event_type, status "
+            "FROM notification_outbox_events"
+        ).fetchone()
+    finally:
+        connection.close()
+    assert event == (
+        "outbox-a",
+        "workflow-a",
+        "notification.queued",
+        "PENDING",
+    )

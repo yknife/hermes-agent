@@ -12,6 +12,7 @@ from alembic.config import Config
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.outbox_service import OutboxService
 from plugins.video_knowledge.backend.app.services.storage_service import (
     StorageMigrationManager,
     StorageSettingsService,
@@ -179,6 +180,12 @@ class ManagedVideoKnowledgeRuntime:
                     await asyncio.to_thread(shutil.copy2, database_path, backup)
             await asyncio.to_thread(self._migrate)
             self.database = Database(self.settings.database_url)
+            await OutboxService(
+                self.database,
+                max_attempts=self.settings.notification_max_attempts,
+                retry_base_seconds=self.settings.notification_retry_base_seconds,
+                retry_max_seconds=self.settings.notification_retry_max_seconds,
+            ).reconcile()
             await ASRSettingsService(self.database, self.settings).load()
             await StorageSettingsService(self.database, self.settings).load()
             self.settings.storage_root.mkdir(parents=True, exist_ok=True)

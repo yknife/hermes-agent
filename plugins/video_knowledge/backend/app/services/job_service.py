@@ -1,9 +1,6 @@
 import json
-import threading
-import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any, cast
-from uuid import uuid4
 
 from sqlalchemy import Select, and_, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
@@ -30,23 +27,10 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     JobEvent,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-_id_lock = threading.Lock()
-_last_id_time_ns = 0
-
-
-def new_id(prefix: str) -> str:
-    global _last_id_time_ns
-    with _id_lock:
-        value = max(time.time_ns(), _last_id_time_ns + 1)
-        _last_id_time_ns = value
-    return f"{prefix}_{value:020d}_{uuid4().hex[:10]}"
-
+from plugins.video_knowledge.backend.app.services.identity import new_id, utc_now
+from plugins.video_knowledge.backend.app.services.outbox_service import (
+    queue_terminal_notifications,
+)
 
 ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.PENDING: {JobStatus.RUNNING, JobStatus.CANCELLED},
@@ -622,6 +606,8 @@ class JobStateMachine:
         workflow.terminal_reason = reason
         workflow.updated_at = now
         workflow.completed_at = now if target.terminal else None
+        if target.terminal:
+            await queue_terminal_notifications(session, workflow)
 
     async def _add_event(
         self,

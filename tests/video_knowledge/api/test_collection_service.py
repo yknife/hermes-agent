@@ -228,6 +228,8 @@ async def test_workflow_waits_for_analysis_and_parent_links_survive_restart(tmp_
     during = await service.status(accepted["workflow_id"], _origin())
     assert during["status"] == WorkflowStatus.ANALYZING.value
     assert during["analysis_complete"] is False
+    async with database.session() as session:
+        assert await session.scalar(select(func.count(NotificationOutbox.id))) == 0
     await database.dispose()
 
     reopened = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
@@ -259,6 +261,7 @@ async def test_workflow_waits_for_analysis_and_parent_links_survive_restart(tmp_
         assert complete["status"] == WorkflowStatus.SUCCEEDED.value
         assert complete["analysis_complete"] is True
         async with reopened.session() as session:
+            assert await session.scalar(select(func.count(NotificationOutbox.id))) == 1
             assert (
                 await session.scalar(select(func.count(WorkflowSubscription.id))) == 1
             )

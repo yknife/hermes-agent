@@ -73,6 +73,24 @@ class WorkflowStatus(StrEnum):
         }
 
 
+class NotificationStatus(StrEnum):
+    PENDING = "PENDING"
+    IN_FLIGHT = "IN_FLIGHT"
+    RETRY = "RETRY"
+    DELIVERED = "DELIVERED"
+    DEAD = "DEAD"
+
+
+class NotificationEventType(StrEnum):
+    QUEUED = "notification.queued"
+    CLAIMED = "notification.claimed"
+    LEASE_RENEWED = "notification.lease_renewed"
+    RELEASED = "notification.released"
+    ACKNOWLEDGED = "notification.acknowledged"
+    RETRY_SCHEDULED = "notification.retry_scheduled"
+    DEAD = "notification.dead"
+
+
 class SourceType(StrEnum):
     VIDEO = "VIDEO"
     LIVE = "LIVE"

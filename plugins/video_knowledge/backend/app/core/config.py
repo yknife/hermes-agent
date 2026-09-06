@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     messaging_max_submissions_per_user_per_day: int = Field(default=10, ge=1, le=1000)
     messaging_max_video_duration_seconds: int = Field(default=1800, ge=1, le=86400)
     messaging_max_video_height: Literal[360, 480, 720, 1080] = 720
+    notification_lease_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
+    notification_max_attempts: int = Field(default=8, ge=1, le=100)
+    notification_retry_base_seconds: float = Field(default=5.0, ge=0.1, le=3600.0)
+    notification_retry_max_seconds: float = Field(default=900.0, ge=0.1, le=86400.0)
     hermes_base_url: str = "http://127.0.0.1:8642/v1"
     hermes_api_mode: str = "chat_completions"
     hermes_model: str = "hermes-agent"

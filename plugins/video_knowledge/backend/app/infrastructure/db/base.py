@@ -160,6 +160,30 @@ class NotificationOutbox(Base):
     )
 
 
+class NotificationOutboxEvent(Base):
+    """Secret-free delivery lifecycle event for recovery and operations."""
+
+    __tablename__ = "notification_outbox_events"
+    __table_args__ = (
+        Index("ix_notification_outbox_events_outbox", "outbox_id", "created_at"),
+        Index("ix_notification_outbox_events_type", "event_type", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    outbox_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("notification_outbox.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Source(Base):
     __tablename__ = "sources"
     __table_args__ = (
