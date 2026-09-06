@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
@@ -175,3 +176,30 @@ async def test_controller_runs_without_a_separate_http_service(
     assert local_ingest.body["source"]["platform"] == "local"
     assert local_ingest.body["job"]["input"]["source_kind"] == "local"
     await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_migration_preserves_existing_process_loggers(
+    tmp_path: Path,
+) -> None:
+    probe = logging.getLogger("gateway.runtime-migration-probe")
+    original_disabled = probe.disabled
+    original_level = probe.level
+    probe.disabled = False
+    probe.setLevel(logging.INFO)
+    runtime = ManagedVideoKnowledgeRuntime(
+        Settings(
+            _env_file=None,
+            database_url=f"sqlite+aiosqlite:///{tmp_path / 'profile' / 'app.db'}",
+            storage_root=tmp_path / "profile" / "storage",
+        ),
+        start_worker=False,
+    )
+    try:
+        await runtime.start()
+        assert not probe.disabled
+        assert probe.level == logging.INFO
+    finally:
+        await runtime.stop()
+        probe.disabled = original_disabled
+        probe.setLevel(original_level)

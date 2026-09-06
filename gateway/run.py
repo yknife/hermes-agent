@@ -12947,6 +12947,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._install_plugin_message_injector()
+        self._video_knowledge_notification_manager = None
+        try:
+            from plugins.video_knowledge.gateway_delivery import (
+                start_gateway_notification_runtimes,
+            )
+
+            self._video_knowledge_notification_manager = (
+                await start_gateway_notification_runtimes(self)
+            )
+            logger.info(
+                "Video Knowledge notification dispatchers active: %d",
+                self._video_knowledge_notification_manager.started_count,
+            )
+        except Exception:
+            # VKC delivery is an optional plugin runtime. A local database or
+            # migration problem must stay visible without taking messaging down.
+            logger.exception("Video Knowledge notification dispatcher startup failed")
         self._update_runtime_status("running")
 
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
@@ -14710,6 +14727,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if cancel_completion_batches is not None:
                 await cancel_completion_batches()
+
+            notification_manager = getattr(
+                self, "_video_knowledge_notification_manager", None
+            )
+            if notification_manager is not None:
+                try:
+                    await notification_manager.stop()
+                except Exception:
+                    logger.exception(
+                        "Video Knowledge notification dispatcher shutdown failed"
+                    )
+                self._video_knowledge_notification_manager = None
 
             for platform, adapter in list(self.adapters.items()):
                 await self._bounded_adapter_teardown(adapter, platform)

@@ -4,9 +4,11 @@ import json
 from pathlib import Path
 
 from dotenv import dotenv_values
-from pydantic import ValidationError
-
 from hermes_constants import get_hermes_home
+from pydantic import ValidationError
+from tools.invocation_context import get_tool_invocation_context
+from tools.registry import tool_error, tool_result
+
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.schemas.messaging import (
@@ -19,8 +21,6 @@ from plugins.video_knowledge.backend.app.services.collection_service import (
     CollectionOrigin,
     CollectionService,
 )
-from tools.invocation_context import get_tool_invocation_context
-from tools.registry import tool_error, tool_result
 
 
 def _context():
@@ -90,7 +90,7 @@ async def _invoke(name, args):
             result = await service.collect(parsed.url, origin)
             result["message"] = (
                 "任务已排队。只回复受理信息和 workflow_id；不要等待或循环查询。"
-                "终态推送尚未启用，可稍后查询状态。"
+                "任务结束后会向当前飞书会话推送结果，也可稍后查询状态。"
             )
         elif name == "get_collection_status":
             parsed = CollectionStatusArguments.model_validate(args)
@@ -140,7 +140,8 @@ MESSAGING_TOOLS = tuple(
         (
             "collect_video",
             "Queue one Bilibili video for collection and analysis. Immediately acknowledge "
-            "the returned workflow ID; never poll in a loop. Completion push is not enabled yet.",
+            "the returned workflow ID; never poll in a loop. Completion is pushed to the "
+            "trusted originating Feishu conversation.",
             CollectVideoArguments,
             collect_video,
         ),

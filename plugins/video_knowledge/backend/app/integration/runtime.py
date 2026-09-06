@@ -5,6 +5,7 @@ import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from alembic import command
 from alembic.config import Config
@@ -18,6 +19,11 @@ from plugins.video_knowledge.backend.app.services.storage_service import (
     StorageSettingsService,
 )
 from plugins.video_knowledge.backend.hermes_client import HermesClient
+
+if TYPE_CHECKING:
+    from plugins.video_knowledge.backend.app.services.notification_dispatcher import (
+        NotificationTransport,
+    )
 
 
 def _database_path(database_url: str) -> Path | None:
@@ -152,6 +158,7 @@ class ManagedVideoKnowledgeRuntime:
         repo_root: Path | None = None,
         start_worker: bool = True,
         parent_pid: int | None = None,
+        notification_transport: "NotificationTransport | None" = None,
     ) -> None:
         self.settings = settings
         self.repo_root = (repo_root or Path(__file__).resolve().parents[2]).resolve()
@@ -159,6 +166,8 @@ class ManagedVideoKnowledgeRuntime:
         self.database: Database | None = None
         self.hermes_client: HermesClient | None = None
         self.storage_manager: StorageMigrationManager | None = None
+        self.notification_transport = notification_transport
+        self.notification_dispatcher = None
         self.supervisor = WorkerSupervisor(
             settings, self.repo_root, parent_pid=parent_pid or os.getpid()
         )
@@ -207,10 +216,56 @@ class ManagedVideoKnowledgeRuntime:
             )
             if self.start_worker:
                 await self.supervisor.start()
+            if self.notification_transport is not None:
+                from plugins.video_knowledge.backend.app.services.notification_dispatcher import (
+                    NotificationDispatcher,
+                )
+
+                self.notification_dispatcher = NotificationDispatcher(
+                    self.database,
+                    self.notification_transport,
+                    lease_seconds=self.settings.notification_lease_seconds,
+                    max_attempts=self.settings.notification_max_attempts,
+                    retry_base_seconds=self.settings.notification_retry_base_seconds,
+                    retry_max_seconds=self.settings.notification_retry_max_seconds,
+                    owner=f"gateway-{os.getpid()}-{id(self):x}",
+                )
+                await self.notification_dispatcher.start()
             self._started = True
+
+    async def attach_notification_transport(
+        self, transport: "NotificationTransport"
+    ) -> None:
+        await self.start()
+        async with self._start_lock:
+            self.notification_transport = transport
+            if self.notification_dispatcher is not None:
+                return
+            if self.database is None:
+                raise RuntimeError("Video Knowledge database is unavailable")
+            from plugins.video_knowledge.backend.app.services.notification_dispatcher import (
+                NotificationDispatcher,
+            )
+
+            self.notification_dispatcher = NotificationDispatcher(
+                self.database,
+                transport,
+                lease_seconds=self.settings.notification_lease_seconds,
+                max_attempts=self.settings.notification_max_attempts,
+                retry_base_seconds=self.settings.notification_retry_base_seconds,
+                retry_max_seconds=self.settings.notification_retry_max_seconds,
+                owner=f"gateway-{os.getpid()}-{id(self):x}",
+            )
+            await self.notification_dispatcher.start()
 
     def _migrate(self) -> None:
         config = Config(str(self.repo_root / "alembic.ini"))
+        # This runtime can be initialized after Gateway has configured its own
+        # process logging. Alembic's env.py calls logging.fileConfig whenever
+        # config_file_name is set, which disables existing Gateway loggers and
+        # makes a healthy process look frozen immediately after adapters connect.
+        # The parsed Alembic options remain available after clearing the name.
+        config.config_file_name = None
         config.set_main_option("script_location", str(self.repo_root / "migrations"))
         config.attributes["database_url"] = self.settings.database_url
         command.upgrade(config, "head")
@@ -221,6 +276,9 @@ class ManagedVideoKnowledgeRuntime:
                 return
             if self.storage_manager is not None:
                 await self.storage_manager.wait()
+            if self.notification_dispatcher is not None:
+                await self.notification_dispatcher.stop()
+                self.notification_dispatcher = None
             await self.supervisor.stop()
             if self.hermes_client is not None:
                 await self.hermes_client.close()
@@ -258,6 +316,7 @@ class VideoKnowledgeRuntimeRegistry:
         gateway_base_url: str,
         gateway_api_key: str | None,
         start_worker: bool = True,
+        notification_transport: "NotificationTransport | None" = None,
     ) -> ManagedVideoKnowledgeRuntime:
         root = (profile_home / "video-knowledge").resolve()
         key = str(root).casefold()
@@ -265,6 +324,7 @@ class VideoKnowledgeRuntimeRegistry:
             runtime = self._runtimes.get(key)
             if runtime is None:
                 settings = Settings(
+                    _env_file=profile_home / ".env",
                     database_url=f"sqlite+aiosqlite:///{root / 'data' / 'app.db'}",
                     storage_root=root / "storage",
                     hermes_base_url=f"{gateway_base_url.rstrip('/')}/v1",
@@ -272,11 +332,23 @@ class VideoKnowledgeRuntimeRegistry:
                     auto_analyze=True,
                 )
                 runtime = ManagedVideoKnowledgeRuntime(
-                    settings, start_worker=start_worker
+                    settings,
+                    start_worker=start_worker,
+                    notification_transport=notification_transport,
                 )
                 self._runtimes[key] = runtime
         await runtime.start()
+        if notification_transport is not None:
+            await runtime.attach_notification_transport(notification_transport)
         return runtime
+
+    async def stop(self, profile_home: Path) -> None:
+        root = (profile_home / "video-knowledge").resolve()
+        key = str(root).casefold()
+        async with self._lock:
+            runtime = self._runtimes.pop(key, None)
+        if runtime is not None:
+            await runtime.stop()
 
     async def stop_all(self) -> None:
         async with self._lock:

@@ -1969,7 +1969,13 @@ class FeishuAdapter(BasePlatformAdapter):
         last_response = None
 
         try:
-            for chunk in chunks:
+            for chunk_index, chunk in enumerate(chunks, 1):
+                chunk_metadata = dict(metadata or {})
+                idempotency_key = chunk_metadata.get("notification_idempotency_key")
+                if idempotency_key and len(chunks) > 1:
+                    chunk_metadata["notification_idempotency_key"] = (
+                        f"{idempotency_key}:chunk:{chunk_index}"
+                    )
                 msg_type, payload = self._build_outbound_payload(
                     chunk, prefer_post=prefer_post,
                 )
@@ -1979,7 +1985,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         msg_type=msg_type,
                         payload=payload,
                         reply_to=reply_to,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                 except Exception as exc:
                     if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
@@ -1990,7 +1996,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         msg_type="text",
                         payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
                         reply_to=reply_to,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                 if (
                     msg_type == "post"
@@ -2003,7 +2009,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         msg_type="text",
                         payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
                         reply_to=reply_to,
-                        metadata=metadata,
+                        metadata=chunk_metadata,
                     )
                 last_response = response
 
@@ -4824,12 +4830,18 @@ class FeishuAdapter(BasePlatformAdapter):
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
+        notification_key = (metadata or {}).get("notification_idempotency_key")
+        uuid_value = (
+            str(uuid.uuid5(uuid.NAMESPACE_URL, f"hermes:vkc:{notification_key}"))
+            if notification_key
+            else str(uuid.uuid4())
+        )
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
                 reply_in_thread=reply_in_thread,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
@@ -4843,7 +4855,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=_thread_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_create_message_request("thread_id", body)
         else:
@@ -4859,7 +4871,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
-                uuid_value=str(uuid.uuid4()),
+                uuid_value=uuid_value,
             )
             request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
