@@ -54,6 +54,25 @@ class JobEventType(StrEnum):
     LEASE_RENEWED = "job.lease_renewed"
 
 
+class WorkflowStatus(StrEnum):
+    PENDING = "PENDING"
+    INGESTING = "INGESTING"
+    ANALYZING = "ANALYZING"
+    SUCCEEDED = "SUCCEEDED"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+    @property
+    def terminal(self) -> bool:
+        return self in {
+            WorkflowStatus.SUCCEEDED,
+            WorkflowStatus.PARTIAL,
+            WorkflowStatus.FAILED,
+            WorkflowStatus.CANCELLED,
+        }
+
+
 class SourceType(StrEnum):
     VIDEO = "VIDEO"
     LIVE = "LIVE"

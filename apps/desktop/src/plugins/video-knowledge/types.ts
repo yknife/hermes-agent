@@ -92,6 +92,8 @@ export interface AsrOptions {
 
 export interface Job {
   id: string
+  workflow_id: null | string
+  parent_job_id: null | string
   source_id: null | string
   media_id: null | string
   type: string

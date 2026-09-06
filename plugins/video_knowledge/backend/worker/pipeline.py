@@ -6,7 +6,6 @@ from pathlib import Path
 
 from plugins.video_knowledge.backend.app.domain.enums import (
     JobStage,
-    JobType,
     MediaAssetKind,
 )
 from plugins.video_knowledge.backend.app.domain.errors import (
@@ -419,8 +418,8 @@ class IngestVideoPipeline:
             )
         analysis_job_id: str | None = None
         if bool(payload.get("auto_analyze", False)):
-            analysis_job = await self.state_machine.create(
-                job_type=JobType.ANALYZE,
+            analysis_job = await self.state_machine.ensure_analysis_child(
+                job,
                 input_data={
                     "media_id": media.id,
                     "transcript_id": transcript.id,
@@ -428,7 +427,6 @@ class IngestVideoPipeline:
                     "analysis_provider": payload.get("analysis_provider"),
                     "analysis_model": payload.get("analysis_model"),
                 },
-                source_id=job.source_id,
                 media_id=media.id,
                 actor=f"worker:{worker_id}",
             )

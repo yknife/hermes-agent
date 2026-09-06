@@ -17,6 +17,8 @@ class JobCreate(BaseModel):
 
 class JobRead(BaseModel):
     id: str
+    workflow_id: str | None
+    parent_job_id: str | None
     source_id: str | None
     media_id: str | None
     type: str
@@ -46,6 +48,8 @@ class JobRead(BaseModel):
         input_value.pop("cookies_file", None)
         return cls(
             id=job.id,
+            workflow_id=job.workflow_id,
+            parent_job_id=job.parent_job_id,
             source_id=job.source_id,
             media_id=job.media_id,
             type=job.type,

@@ -1,10 +1,11 @@
 import json
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, func, or_, select, update
+from sqlalchemy import Select, and_, func, or_, select, text, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,7 @@ from plugins.video_knowledge.backend.app.domain.enums import (
     JobStage,
     JobStatus,
     JobType,
+    WorkflowStatus,
 )
 from plugins.video_knowledge.backend.app.domain.errors import (
     JobInvalidTransitionError,
@@ -22,6 +24,7 @@ from plugins.video_knowledge.backend.app.domain.errors import (
     JobProgressError,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
+    CollectionWorkflow,
     Job,
     JobAttempt,
     JobEvent,
@@ -33,8 +36,16 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+_id_lock = threading.Lock()
+_last_id_time_ns = 0
+
+
 def new_id(prefix: str) -> str:
-    return f"{prefix}_{time.time_ns():020d}_{uuid4().hex[:10]}"
+    global _last_id_time_ns
+    with _id_lock:
+        value = max(time.time_ns(), _last_id_time_ns + 1)
+        _last_id_time_ns = value
+    return f"{prefix}_{value:020d}_{uuid4().hex[:10]}"
 
 
 ALLOWED_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
@@ -76,6 +87,8 @@ class JobStateMachine:
         actor: str = "api",
         source_id: str | None = None,
         media_id: str | None = None,
+        workflow_id: str | None = None,
+        parent_job_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> Job:
         if session is None:
@@ -88,6 +101,8 @@ class JobStateMachine:
                     actor=actor,
                     source_id=source_id,
                     media_id=media_id,
+                    workflow_id=workflow_id,
+                    parent_job_id=parent_job_id,
                     session=transaction,
                 )
         now = utc_now()
@@ -104,6 +119,8 @@ class JobStateMachine:
             input_json=json.dumps(input_data or {}, ensure_ascii=False),
             source_id=source_id,
             media_id=media_id,
+            workflow_id=workflow_id,
+            parent_job_id=parent_job_id,
         )
         session.add(job)
         await session.flush()
@@ -115,6 +132,7 @@ class JobStateMachine:
             message="任务已创建",
             actor=actor,
         )
+        await self._sync_workflow(session, job)
         return job
 
     async def claim_next(self, worker_id: str, lease_seconds: float) -> Job | None:
@@ -164,7 +182,53 @@ class JobStateMachine:
                 message=f"Worker {worker_id} 已领取任务",
                 actor=worker_id,
             )
+            await self._sync_workflow(session, job)
             return job
+
+    async def ensure_analysis_child(
+        self,
+        parent: Job,
+        *,
+        input_data: dict[str, Any],
+        media_id: str | None,
+        actor: str,
+    ) -> Job:
+        if not parent.workflow_id:
+            return await self.create(
+                job_type=JobType.ANALYZE,
+                input_data=input_data,
+                source_id=parent.source_id,
+                media_id=media_id,
+                actor=actor,
+            )
+        async with self.database.session() as session:
+            await session.execute(text("BEGIN IMMEDIATE"))
+            try:
+                workflow = await session.get(CollectionWorkflow, parent.workflow_id)
+                if workflow is None:
+                    raise JobNotFoundError(
+                        "采集工作流不存在", details={"workflow_id": parent.workflow_id}
+                    )
+                if workflow.analysis_job_id:
+                    existing = await session.get(Job, workflow.analysis_job_id)
+                    if existing is not None:
+                        await session.commit()
+                        return existing
+                child = await self.create(
+                    job_type=JobType.ANALYZE,
+                    input_data=input_data,
+                    source_id=parent.source_id,
+                    media_id=media_id,
+                    workflow_id=parent.workflow_id,
+                    parent_job_id=parent.id,
+                    actor=actor,
+                    session=session,
+                )
+                await session.commit()
+                return child
+            except BaseException:
+                await session.rollback()
+                raise
 
     async def renew_lease(
         self, job_id: str, worker_id: str, lease_seconds: float
@@ -220,6 +284,7 @@ class JobStateMachine:
                 message=message,
                 actor=worker_id,
             )
+            await self._sync_workflow(session, job)
             return job
 
     async def complete(
@@ -374,6 +439,7 @@ class JobStateMachine:
                 message="用户请求重试",
                 actor=actor,
             )
+            await self._sync_workflow(session, job)
             return job
 
     async def release_due_jobs(self, actor: str = "scheduler") -> int:
@@ -498,6 +564,64 @@ class JobStateMachine:
             message=message,
             actor=actor,
         )
+        await self._sync_workflow(session, job)
+
+    async def _sync_workflow(self, session: AsyncSession, changed_job: Job) -> None:
+        if not changed_job.workflow_id:
+            return
+        workflow = await session.get(CollectionWorkflow, changed_job.workflow_id)
+        if workflow is None:
+            return
+        if changed_job.type == JobType.INGEST_VIDEO.value:
+            workflow.ingest_job_id = changed_job.id
+        elif changed_job.type == JobType.ANALYZE.value:
+            workflow.analysis_job_id = changed_job.id
+            workflow.media_id = changed_job.media_id or workflow.media_id
+
+        ingest = (
+            changed_job
+            if changed_job.id == workflow.ingest_job_id
+            else await session.get(Job, workflow.ingest_job_id)
+            if workflow.ingest_job_id
+            else None
+        )
+        analysis = (
+            changed_job
+            if changed_job.id == workflow.analysis_job_id
+            else await session.get(Job, workflow.analysis_job_id)
+            if workflow.analysis_job_id
+            else None
+        )
+        if analysis is not None:
+            status = JobStatus(analysis.status)
+            if status.terminal:
+                target = WorkflowStatus(status.value)
+                reason = analysis.error_code
+            else:
+                target = WorkflowStatus.ANALYZING
+                reason = None
+        elif ingest is not None:
+            status = JobStatus(ingest.status)
+            if status in {JobStatus.FAILED, JobStatus.PARTIAL, JobStatus.CANCELLED}:
+                target = WorkflowStatus(status.value)
+                reason = ingest.error_code
+            elif status == JobStatus.PENDING:
+                target = WorkflowStatus.PENDING
+                reason = None
+            else:
+                # A successful auto-analyze ingest without its child link is
+                # intentionally non-terminal. Recovery can restore the link
+                # without ever emitting a premature success state.
+                target = WorkflowStatus.INGESTING
+                reason = None
+        else:
+            target = WorkflowStatus.PENDING
+            reason = None
+        now = utc_now()
+        workflow.status = target.value
+        workflow.terminal_reason = reason
+        workflow.updated_at = now
+        workflow.completed_at = now if target.terminal else None
 
     async def _add_event(
         self,

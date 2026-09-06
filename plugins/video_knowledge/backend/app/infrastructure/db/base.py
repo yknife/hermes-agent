@@ -57,6 +57,109 @@ class CollectionRequest(Base):
     )
 
 
+class CollectionWorkflow(Base):
+    __tablename__ = "collection_workflows"
+    __table_args__ = (
+        Index("ix_collection_workflows_source_status", "source_id", "status"),
+        Index("ix_collection_workflows_updated", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sources.id", ondelete="RESTRICT"), nullable=False
+    )
+    media_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("media_items.id", ondelete="SET NULL"), nullable=True
+    )
+    ingest_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    analysis_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("jobs.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    terminal_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkflowSubscription(Base):
+    __tablename__ = "workflow_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("inbound_idempotency_key", name="uq_workflow_inbound_key"),
+        Index("ix_workflow_subscription_owner", "platform", "user_id", "created_at"),
+        Index("ix_workflow_subscription_workflow", "workflow_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("collection_workflows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    chat_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    thread_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    message_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    inbound_idempotency_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    delivery_policy: Mapped[str] = mapped_column(
+        String(32), default="TERMINAL", nullable=False
+    )
+    is_owner: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class NotificationOutbox(Base):
+    __tablename__ = "notification_outbox"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_notification_idempotency_key"),
+        Index("ix_notification_outbox_schedule", "status", "next_attempt_at"),
+        Index("ix_notification_outbox_lease", "status", "lease_expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("collection_workflows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subscription_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("workflow_subscriptions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    notification_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    payload_json: Mapped[str] = mapped_column(Text, default="{}", nullable=False)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Source(Base):
     __tablename__ = "sources"
     __table_args__ = (
@@ -298,6 +401,18 @@ class Job(Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workflow_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("collection_workflows.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    parent_job_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     media_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     type: Mapped[str] = mapped_column(String(32), nullable=False)
