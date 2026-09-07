@@ -60,6 +60,7 @@ class TestTurnContext:
         ctx = TurnContext(
             source=source,
             session_id="session-a",
+            invocation_message_id="inbound-message",
             event_message_id="event-message",
         )
 
@@ -84,10 +85,56 @@ class TestTurnContext:
         assert invocation.platform == "feishu"
         assert invocation.chat_id == "chat-a"
         assert invocation.thread_id == "thread-a"
-        assert invocation.message_id == "event-message"
+        assert invocation.message_id == "inbound-message"
         assert invocation.user_id == "user-a"
         assert invocation.session_id == "session-a"
         assert invocation.authorized is True
+        assert get_tool_invocation_context() is None
+
+    @pytest.mark.asyncio
+    async def test_fast_video_admission_uses_topic_events_own_message_id(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.run import GatewayRunner
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from plugins.video_knowledge import messaging_tools
+        from tools.invocation_context import get_tool_invocation_context
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="group-a",
+            user_id="user-a",
+            message_id="topic-root",
+            thread_id="topic-root",
+        )
+        event = SimpleNamespace(
+            text=(
+                "采集并分析：https://www.bilibili.com/video/BV1Sxbp6REnB"
+            ),
+            message_id="topic-reply-message",
+            internal=False,
+        )
+        captured = {}
+
+        async def collect_video(_args):
+            captured["context"] = get_tool_invocation_context()
+            return '{"accepted": true, "workflow_id": "workflow-a", "status": "PENDING"}'
+
+        monkeypatch.setattr(messaging_tools, "collect_video", collect_video)
+        runner = SimpleNamespace(_is_user_authorized=lambda value: value is source)
+        token = set_hermes_home_override(tmp_path)
+        try:
+            reply = await GatewayRunner._try_fast_admit_video_knowledge(
+                runner, event, source, "session-a"
+            )
+        finally:
+            reset_hermes_home_override(token)
+        assert "workflow-a" in reply
+        assert captured["context"].message_id == "topic-reply-message"
+        assert captured["context"].thread_id == "topic-root"
         assert get_tool_invocation_context() is None
 
     def test_shared_containers_visible_to_outer_scope(self):

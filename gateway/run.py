@@ -5221,7 +5221,7 @@ class TurnRunner:
             source=source,
             profile_home=get_hermes_home(),
             session_id=ctx.session_id,
-            event_message_id=ctx.event_message_id,
+            event_message_id=(ctx.invocation_message_id or ctx.event_message_id),
             authorized=authorized,
         )
         with bind_tool_invocation_context(context):
@@ -18627,6 +18627,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _try_fast_admit_video_knowledge(
+        self, event: MessageEvent, source: SessionSource, session_id: str
+    ) -> Optional[str]:
+        """Persist an explicit Feishu Bilibili request before an LLM round trip."""
+        platform = getattr(source.platform, "value", source.platform)
+        if (
+            str(platform) != "feishu"
+            or getattr(event, "internal", False)
+            or getattr(source, "is_bot", False)
+            or not self._is_user_authorized(source)
+        ):
+            return None
+        from plugins.video_knowledge.messaging_tools import (
+            collect_video,
+            fast_collect_url,
+        )
+        from tools.invocation_context import (
+            bind_tool_invocation_context,
+            gateway_tool_invocation_context,
+        )
+
+        url = fast_collect_url(getattr(event, "text", ""))
+        message_id = str(getattr(event, "message_id", None) or "")
+        if url is None or not message_id:
+            return None
+        context = gateway_tool_invocation_context(
+            source=source,
+            profile_home=get_hermes_home(),
+            session_id=session_id,
+            event_message_id=message_id,
+            authorized=True,
+        )
+        with bind_tool_invocation_context(context):
+            payload = json.loads(await collect_video({"url": url}))
+        error = str(payload.get("error") or "").strip()
+        if error:
+            return f"视频知识任务未受理：{error}"
+        workflow_id = str(payload.get("workflow_id") or "")
+        if not workflow_id:
+            return "视频知识任务未受理：运行结果缺少 workflow ID。"
+        state = str(payload.get("status") or "PENDING")
+        cache_note = "（已命中缓存）" if payload.get("cache_hit") else ""
+        return (
+            f"视频知识任务已受理{cache_note}\n"
+            f"Workflow ID：{workflow_id}\n"
+            f"状态：{state}\n"
+            "完成或失败后会自动回复当前飞书会话。"
+        )
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -18708,6 +18757,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
+        fast_reply = await self._try_fast_admit_video_knowledge(
+            event, source, session_entry.session_id
+        )
+        if fast_reply is not None:
+            adapter = self._adapter_for_source(source)
+            if adapter is None:
+                raise RuntimeError("Feishu adapter became unavailable during admission")
+            send_result = await adapter.send(
+                source.chat_id,
+                fast_reply,
+                metadata=self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event)
+                ),
+            )
+            if not getattr(send_result, "success", False):
+                raise RuntimeError("Feishu admission reply delivery failed")
+            logger.info(
+                "Video Knowledge fast admission reply delivered in %.3fs",
+                time.time() - _msg_start_time,
+            )
+            return
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(
@@ -19997,6 +20067,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_id=_run_start_session_id,
                 session_key=session_key,
                 run_generation=run_generation,
+                invocation_message_id=getattr(event, "message_id", None),
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
                 moa_config=getattr(event, "_moa_config", None),
@@ -27650,6 +27721,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
+        invocation_message_id: Optional[str] = None,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
@@ -27671,7 +27743,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                _interrupt_depth=_interrupt_depth,
+                invocation_message_id=invocation_message_id,
+                event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -27684,7 +27758,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
+                _interrupt_depth=_interrupt_depth,
+                invocation_message_id=invocation_message_id,
+                event_message_id=event_message_id,
                 channel_prompt=channel_prompt, moa_config=moa_config,
                 persist_user_message=persist_user_message,
                 persist_user_timestamp=persist_user_timestamp,
@@ -27826,6 +27902,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_key: str = None,
         run_generation: Optional[int] = None,
         _interrupt_depth: int = 0,
+        invocation_message_id: Optional[str] = None,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
         moa_config: Optional[dict] = None,
@@ -28137,6 +28214,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=session_key,
             run_generation=run_generation,
             _interrupt_depth=_interrupt_depth,
+            invocation_message_id=invocation_message_id,
             event_message_id=event_message_id,
             moa_config=moa_config,
             persist_user_message=persist_user_message,
@@ -29279,6 +29357,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_source = source
                 next_message = pending
                 next_message_id = None
+                next_invocation_message_id = None
                 next_channel_prompt = None
                 next_session_key = session_key
                 # #60671 — carry the pending event's message_type into the
@@ -29315,6 +29394,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if next_message is None:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
+                    next_invocation_message_id = getattr(pending_event, "message_id", None)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
                     next_message_type = getattr(pending_event, "message_type", None)
 
@@ -29369,6 +29449,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=next_session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
+                    invocation_message_id=next_invocation_message_id,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                     message_type=next_message_type,

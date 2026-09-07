@@ -1,6 +1,7 @@
 """Messaging tools use trusted invocation identity, never model-supplied targets."""
 
 import json
+import re
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -183,3 +184,24 @@ MESSAGING_TOOLS = tuple(
         ),
     )
 )
+
+
+_FAST_COLLECT_INTENTS = ("采集", "收集", "分析", "知识")
+_FAST_COLLECT_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+
+
+def fast_collect_url(text: str) -> str | None:
+    """Extract one explicit Bilibili collection URL for Gateway fast admission."""
+    value = str(text or "")
+    if not any(intent in value for intent in _FAST_COLLECT_INTENTS):
+        return None
+    candidates = [
+        match.group(0).rstrip(".,;:!?，。；：！？)]}）】")
+        for match in _FAST_COLLECT_URL.finditer(value)
+    ]
+    if len(candidates) != 1:
+        return None
+    try:
+        return CollectVideoArguments(url=candidates[0]).url
+    except ValidationError:
+        return None

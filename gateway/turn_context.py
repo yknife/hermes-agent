@@ -87,6 +87,10 @@ class TurnContext:
     process_task_id: str = ""
     process_baseline: frozenset[str] = field(default_factory=frozenset)
     _interrupt_depth: int = 0
+    # The transport event's own immutable ID. This differs from
+    # ``event_message_id`` on platforms such as Feishu, where replies use the
+    # topic root as their delivery anchor. Tool idempotency must use this ID.
+    invocation_message_id: Optional[str] = None
     event_message_id: Optional[str] = None
     moa_config: Optional[dict] = None
     persist_user_message: Optional[Any] = None

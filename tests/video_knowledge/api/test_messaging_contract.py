@@ -6,6 +6,7 @@ from plugins.video_knowledge.backend.app.schemas.messaging import (
     CollectVideoArguments,
     RetryCollectionArguments,
 )
+from plugins.video_knowledge.messaging_tools import fast_collect_url
 from pydantic import ValidationError
 
 
@@ -140,3 +141,11 @@ def test_conversation_actions_accept_optional_workflow_identity_only(contract):
         with pytest.raises(ValidationError):
             contract.model_validate(payload)
     assert set(contract.model_json_schema()["properties"]) == {"workflow_id"}
+
+
+def test_fast_collect_url_requires_one_explicit_intent_and_allowed_url():
+    url = "https://www.bilibili.com/video/BV1Sxbp6REnB"
+    assert fast_collect_url(f"采集并分析这个视频：{url}。") == url
+    assert fast_collect_url(url) is None
+    assert fast_collect_url(f"分析 {url} 和 https://b23.tv/AbCd123") is None
+    assert fast_collect_url("分析 https://example.com/video/BV1Sxbp6REnB") is None
