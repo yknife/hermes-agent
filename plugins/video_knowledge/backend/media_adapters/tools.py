@@ -266,7 +266,10 @@ def _raise_for_failure(stderr: str) -> None:
             "private video",
             "members-only",
             "cookies are no longer valid",
+            "cookies have expired",
+            "cookies are expired",
             "cookies do not contain",
+            "fresh cookies",
         )
     ):
         raise AuthenticationRequiredError("该视频需要登录凭据或 Cookies")

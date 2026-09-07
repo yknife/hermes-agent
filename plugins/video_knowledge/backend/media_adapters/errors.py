@@ -8,6 +8,16 @@ class UnsupportedUrlError(MediaToolError):
     retryable = False
 
 
+class UnsafeUrlError(MediaToolError):
+    code = "UNSAFE_URL"
+    retryable = False
+
+
+class StorageCapacityError(MediaToolError):
+    code = "STORAGE_LIMIT"
+    retryable = False
+
+
 class AuthenticationRequiredError(MediaToolError):
     code = "AUTH_REQUIRED"
     retryable = False

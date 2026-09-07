@@ -1,9 +1,12 @@
 """Durable messaging workflows with trusted, owner-scoped subscriptions."""
 
+import asyncio
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,6 +15,7 @@ from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import JobType, WorkflowStatus
 from plugins.video_knowledge.backend.app.domain.errors import JobInvalidTransitionError
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
+    AppSetting,
     CollectionWorkflow,
     Job,
     KnowledgeDocument,
@@ -29,6 +33,9 @@ from plugins.video_knowledge.backend.app.services.job_service import (
 from plugins.video_knowledge.backend.app.services.media_service import normalize_url
 from plugins.video_knowledge.backend.app.services.outbox_service import (
     queue_terminal_notifications,
+)
+from plugins.video_knowledge.backend.app.services.storage_service import (
+    STORAGE_SETTINGS_KEY,
 )
 
 
@@ -149,6 +156,7 @@ class CollectionService:
                     raise CollectionAccessError(
                         "Messaging video collection is disabled."
                     )
+                await self._enforce_storage_capacity(session)
                 await self._enforce_quotas(session, origin)
                 source = await session.scalar(
                     select(Source).where(
@@ -241,6 +249,9 @@ class CollectionService:
                             "messaging_max_duration_seconds": (
                                 self.settings.messaging_max_video_duration_seconds
                             ),
+                            "messaging_min_free_bytes": (
+                                self.settings.messaging_min_free_bytes
+                            ),
                         },
                         session=session,
                     )
@@ -277,12 +288,22 @@ class CollectionService:
     async def _enforce_quotas(
         self, session: AsyncSession, origin: CollectionOrigin
     ) -> None:
-        subscriptions = list(
+        user_subscriptions = list(
             (
                 await session.scalars(
                     select(WorkflowSubscription).where(
                         WorkflowSubscription.platform == origin.platform,
                         WorkflowSubscription.user_id == origin.user_id,
+                    )
+                )
+            ).all()
+        )
+        chat_subscriptions = list(
+            (
+                await session.scalars(
+                    select(WorkflowSubscription).where(
+                        WorkflowSubscription.platform == origin.platform,
+                        WorkflowSubscription.chat_id == origin.chat_id,
                     )
                 )
             ).all()
@@ -293,19 +314,61 @@ class CollectionService:
             .replace(hour=0, minute=0, second=0, microsecond=0)
             .replace(tzinfo=None)
         )
-        daily = sum(
-            item.created_at.replace(tzinfo=None) >= midnight for item in subscriptions
+        user_daily = sum(
+            item.created_at.replace(tzinfo=None) >= midnight
+            for item in user_subscriptions
         )
-        active = 0
-        for workflow_id in {item.workflow_id for item in subscriptions}:
-            workflow = await session.get(CollectionWorkflow, workflow_id)
-            if workflow and not WorkflowStatus(workflow.status).terminal:
-                active += 1
+        chat_daily = sum(
+            item.created_at.replace(tzinfo=None) >= midnight
+            for item in chat_subscriptions
+        )
+
+        async def active_count(subscriptions: list[WorkflowSubscription]) -> int:
+            active = 0
+            for workflow_id in {item.workflow_id for item in subscriptions}:
+                workflow = await session.get(CollectionWorkflow, workflow_id)
+                if workflow and not WorkflowStatus(workflow.status).terminal:
+                    active += 1
+            return active
+
+        user_active = await active_count(user_subscriptions)
+        chat_active = await active_count(chat_subscriptions)
         if (
-            daily >= self.settings.messaging_max_submissions_per_user_per_day
-            or active >= self.settings.messaging_max_active_per_user
+            user_daily >= self.settings.messaging_max_submissions_per_user_per_day
+            or chat_daily >= self.settings.messaging_max_submissions_per_chat_per_day
+            or user_active >= self.settings.messaging_max_active_per_user
+            or chat_active >= self.settings.messaging_max_active_per_chat
         ):
             raise CollectionAccessError("Messaging collection quota exceeded.")
+
+    async def _enforce_storage_capacity(self, session: AsyncSession) -> None:
+        root = self.settings.storage_root
+        row = await session.get(AppSetting, STORAGE_SETTINGS_KEY)
+        if row is not None:
+            try:
+                saved = json.loads(row.value_json)
+                root = Path(str(saved["storage_root"]))
+            except (KeyError, TypeError, ValueError, OSError):
+                raise CollectionAccessError(
+                    "Messaging collection storage configuration is invalid."
+                ) from None
+        try:
+            free = await asyncio.to_thread(self._free_space, root)
+        except (OSError, RuntimeError):
+            raise CollectionAccessError(
+                "Messaging collection storage is unavailable."
+            ) from None
+        if free < self.settings.messaging_min_free_bytes:
+            raise CollectionAccessError(
+                "Messaging collection storage has insufficient free space."
+            )
+
+    @staticmethod
+    def _free_space(root: Path) -> int:
+        existing = root.resolve()
+        while not existing.exists() and existing != existing.parent:
+            existing = existing.parent
+        return shutil.disk_usage(existing).free
 
     @classmethod
     def _accepted(

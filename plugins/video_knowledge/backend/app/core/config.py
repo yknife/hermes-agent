@@ -49,9 +49,20 @@ class Settings(BaseSettings):
         default_factory=lambda: ["feishu"]
     )
     messaging_max_active_per_user: int = Field(default=1, ge=1, le=10)
+    messaging_max_active_per_chat: int = Field(default=3, ge=1, le=50)
     messaging_max_submissions_per_user_per_day: int = Field(default=10, ge=1, le=1000)
+    messaging_max_submissions_per_chat_per_day: int = Field(default=30, ge=1, le=5000)
     messaging_max_video_duration_seconds: int = Field(default=1800, ge=1, le=86400)
     messaging_max_video_height: Literal[360, 480, 720, 1080] = 720
+    messaging_min_free_bytes: int = Field(
+        default=2 * 1024 * 1024 * 1024,
+        ge=128 * 1024 * 1024,
+        le=1024 * 1024 * 1024 * 1024,
+    )
+    messaging_personal_data_retention_days: int = Field(default=90, ge=1, le=3650)
+    messaging_retention_cleanup_interval_seconds: float = Field(
+        default=86400.0, ge=60.0, le=604800.0
+    )
     notification_lease_seconds: float = Field(default=30.0, ge=1.0, le=600.0)
     notification_max_attempts: int = Field(default=8, ge=1, le=100)
     notification_retry_base_seconds: float = Field(default=5.0, ge=0.1, le=3600.0)

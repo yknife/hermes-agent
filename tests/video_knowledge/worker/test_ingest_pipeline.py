@@ -31,7 +31,10 @@ from plugins.video_knowledge.backend.media_adapters import (
     SubtitleTrack,
     YtDlpAdapter,
 )
-from plugins.video_knowledge.backend.media_adapters.errors import InvalidMediaError
+from plugins.video_knowledge.backend.media_adapters.errors import (
+    InvalidMediaError,
+    StorageCapacityError,
+)
 from plugins.video_knowledge.backend.media_adapters.models import MediaFileInfo
 from plugins.video_knowledge.backend.transcript import (
     ASRChunkResult,
@@ -44,6 +47,7 @@ from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
 from plugins.video_knowledge.backend.worker.pipeline import (
     IngestVideoPipeline,
     enforce_messaging_duration_limit,
+    enforce_messaging_storage_limit,
 )
 from sqlalchemy import select
 
@@ -72,6 +76,19 @@ def test_messaging_duration_limit_requires_known_bounded_duration() -> None:
                 ),
                 payload,
             )
+
+
+@pytest.mark.asyncio
+async def test_messaging_storage_limit_is_rechecked_by_worker(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.worker.pipeline.shutil.disk_usage",
+        lambda _path: type("Usage", (), {"free": 100})(),
+    )
+    with pytest.raises(StorageCapacityError) as captured:
+        await enforce_messaging_storage_limit(
+            tmp_path, {"messaging_min_free_bytes": 101}
+        )
+    assert getattr(captured.value, "code", None) == "STORAGE_LIMIT"
 
 
 class FakeDownloader(YtDlpAdapter):

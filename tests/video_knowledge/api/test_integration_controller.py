@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,7 @@ from plugins.video_knowledge.backend.app.integration.controller import (
 )
 from plugins.video_knowledge.backend.app.integration.runtime import (
     ManagedVideoKnowledgeRuntime,
+    _prune_expired_database_backups,
 )
 from plugins.video_knowledge.backend.app.schemas.system import RuntimeStatusResponse
 from plugins.video_knowledge.backend.app.services.media_service import MediaService
@@ -203,3 +206,22 @@ async def test_runtime_migration_preserves_existing_process_loggers(
         await runtime.stop()
         probe.disabled = original_disabled
         probe.setLevel(original_level)
+
+
+def test_runtime_prunes_only_expired_vkc_database_backups(tmp_path: Path) -> None:
+    database = tmp_path / "app.db"
+    database.write_bytes(b"active")
+    expired = tmp_path / "app.db.20250101T000000Z.bak"
+    recent = tmp_path / "app.db.20260907T000000Z.bak"
+    unrelated = tmp_path / "other.db.20250101T000000Z.bak"
+    for path in (expired, recent, unrelated):
+        path.write_bytes(b"backup")
+    old = time.time() - 100 * 86400
+    os.utime(expired, (old, old))
+    os.utime(unrelated, (old, old))
+
+    assert _prune_expired_database_backups(database, retention_days=90) == 1
+    assert not expired.exists()
+    assert recent.exists()
+    assert unrelated.exists()
+    assert database.read_bytes() == b"active"

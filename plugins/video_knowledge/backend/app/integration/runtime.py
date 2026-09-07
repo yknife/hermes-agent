@@ -1,8 +1,10 @@
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -13,6 +15,9 @@ from alembic.config import Config
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.messaging_retention_service import (
+    MessagingRetentionService,
+)
 from plugins.video_knowledge.backend.app.services.outbox_service import OutboxService
 from plugins.video_knowledge.backend.app.services.storage_service import (
     StorageMigrationManager,
@@ -25,6 +30,8 @@ if TYPE_CHECKING:
         NotificationTransport,
     )
 
+logger = logging.getLogger(__name__)
+
 
 def _database_path(database_url: str) -> Path | None:
     prefix = "sqlite+aiosqlite:///"
@@ -34,6 +41,29 @@ def _database_path(database_url: str) -> Path | None:
     if value == ":memory:":
         return None
     return Path(value).resolve()
+
+
+def _prune_expired_database_backups(database_path: Path, *, retention_days: int) -> int:
+    """Remove only expired migration backups beside the active VKC database."""
+    database_path = database_path.resolve()
+    cutoff = time.time() - max(1, retention_days) * 86400
+    removed = 0
+    pattern = f"{database_path.name}.*.bak"
+    for candidate in database_path.parent.glob(pattern):
+        resolved = candidate.resolve()
+        if (
+            resolved.parent != database_path.parent
+            or not resolved.name.startswith(database_path.name + ".")
+            or not resolved.name.endswith(".bak")
+        ):
+            continue
+        try:
+            if resolved.stat().st_mtime < cutoff:
+                resolved.unlink()
+                removed += 1
+        except FileNotFoundError:
+            continue
+    return removed
 
 
 def _open_worker(
@@ -168,6 +198,7 @@ class ManagedVideoKnowledgeRuntime:
         self.storage_manager: StorageMigrationManager | None = None
         self.notification_transport = notification_transport
         self.notification_dispatcher = None
+        self._retention_task: asyncio.Task[None] | None = None
         self.supervisor = WorkerSupervisor(
             settings, self.repo_root, parent_pid=parent_pid or os.getpid()
         )
@@ -187,6 +218,18 @@ class ManagedVideoKnowledgeRuntime:
                         f"{database_path.suffix}.{timestamp}.bak"
                     )
                     await asyncio.to_thread(shutil.copy2, database_path, backup)
+                removed_backups = await asyncio.to_thread(
+                    _prune_expired_database_backups,
+                    database_path,
+                    retention_days=(
+                        self.settings.messaging_personal_data_retention_days
+                    ),
+                )
+                if removed_backups:
+                    logger.info(
+                        "Video Knowledge removed %d expired database backup(s)",
+                        removed_backups,
+                    )
             await asyncio.to_thread(self._migrate)
             self.database = Database(self.settings.database_url)
             await OutboxService(
@@ -197,6 +240,15 @@ class ManagedVideoKnowledgeRuntime:
             ).reconcile()
             await ASRSettingsService(self.database, self.settings).load()
             await StorageSettingsService(self.database, self.settings).load()
+            retention = MessagingRetentionService(
+                self.database,
+                retention_days=self.settings.messaging_personal_data_retention_days,
+            )
+            removed = await retention.cleanup()
+            if removed:
+                logger.info(
+                    "Video Knowledge messaging retention removed %d record(s)", removed
+                )
             self.settings.storage_root.mkdir(parents=True, exist_ok=True)
             self.storage_manager = StorageMigrationManager(
                 self.database,
@@ -231,6 +283,9 @@ class ManagedVideoKnowledgeRuntime:
                     owner=f"gateway-{os.getpid()}-{id(self):x}",
                 )
                 await self.notification_dispatcher.start()
+            self._retention_task = asyncio.create_task(
+                self._run_retention(retention), name="vkc-messaging-retention"
+            )
             self._started = True
 
     async def attach_notification_transport(
@@ -276,6 +331,10 @@ class ManagedVideoKnowledgeRuntime:
                 return
             if self.storage_manager is not None:
                 await self.storage_manager.wait()
+            if self._retention_task is not None:
+                self._retention_task.cancel()
+                await asyncio.gather(self._retention_task, return_exceptions=True)
+                self._retention_task = None
             if self.notification_dispatcher is not None:
                 await self.notification_dispatcher.stop()
                 self.notification_dispatcher = None
@@ -288,6 +347,23 @@ class ManagedVideoKnowledgeRuntime:
                 self.database = None
             self.storage_manager = None
             self._started = False
+
+    async def _run_retention(self, service: MessagingRetentionService) -> None:
+        while True:
+            await asyncio.sleep(
+                self.settings.messaging_retention_cleanup_interval_seconds
+            )
+            try:
+                removed = await service.cleanup()
+                if removed:
+                    logger.info(
+                        "Video Knowledge messaging retention removed %d record(s)",
+                        removed,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Video Knowledge messaging retention cleanup failed")
 
     async def _stop_worker(self) -> None:
         if self.start_worker:

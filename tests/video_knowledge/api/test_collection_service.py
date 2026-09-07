@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from plugins.video_knowledge.backend.app.core.config import Settings
@@ -80,6 +81,7 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
                 "auto_analyze": True,
                 "max_height": 720,
                 "messaging_max_duration_seconds": 1800,
+                "messaging_min_free_bytes": 2 * 1024 * 1024 * 1024,
             }
     finally:
         await database.dispose()
@@ -211,6 +213,44 @@ async def test_gate_and_user_quotas_fail_closed(tmp_path):
             await service.collect(
                 "https://b23.tv/Third123", _origin(message="message-c")
             )
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chat_quota_cannot_be_bypassed_with_different_users(tmp_path):
+    database, service = await _service(
+        tmp_path / "app.db",
+        messaging_max_active_per_user=3,
+        messaging_max_active_per_chat=1,
+    )
+    try:
+        await service.collect("https://b23.tv/First123", _origin(user="user-a"))
+        with pytest.raises(CollectionAccessError, match="quota"):
+            await service.collect(
+                "https://b23.tv/Second123",
+                _origin(user="user-b", message="message-b"),
+            )
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_new_collection_requires_configured_storage_reserve(
+    tmp_path, monkeypatch
+):
+    database, service = await _service(
+        tmp_path / "app.db", messaging_min_free_bytes=512 * 1024 * 1024
+    )
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.app.services.collection_service.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=128 * 1024 * 1024),
+    )
+    try:
+        with pytest.raises(CollectionAccessError, match="free space"):
+            await service.collect("https://b23.tv/Storage123", _origin())
+        async with database.session() as session:
+            assert await session.scalar(select(func.count(Job.id))) == 0
     finally:
         await database.dispose()
 

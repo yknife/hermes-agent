@@ -31,9 +31,11 @@ from plugins.video_knowledge.backend.media_adapters import (
 )
 from plugins.video_knowledge.backend.media_adapters.errors import (
     InvalidMediaError,
+    StorageCapacityError,
     SubtitleNotFoundError,
     SubtitleParseError,
 )
+from plugins.video_knowledge.backend.media_adapters.security import MessagingUrlGuard
 from plugins.video_knowledge.backend.transcript import (
     ASRConfig,
     DeviceDetector,
@@ -67,6 +69,22 @@ def enforce_messaging_duration_limit(probe: MediaProbe, payload: dict) -> None:
         raise InvalidMediaError("消息采集无法确认视频时长")
     if duration > limit:
         raise InvalidMediaError("视频时长超过消息采集限制")
+
+
+async def enforce_messaging_storage_limit(storage_root: Path, payload: dict) -> None:
+    raw_limit = payload.get("messaging_min_free_bytes")
+    if raw_limit is None:
+        return
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        limit = 0
+    try:
+        free = (await asyncio.to_thread(shutil.disk_usage, storage_root)).free
+    except OSError:
+        raise StorageCapacityError("消息采集存储位置不可用") from None
+    if limit <= 0 or free < limit:
+        raise StorageCapacityError("消息采集存储空间不足")
 
 
 class DemoPipeline:
@@ -122,6 +140,7 @@ class IngestVideoPipeline:
         thumbnail_extractor: ThumbnailExtractor | None = None,
         cookies_file: Path | None = None,
         proxy: str | None = None,
+        messaging_url_guard: MessagingUrlGuard | None = None,
     ) -> None:
         self.state_machine = state_machine
         self.media_service = media_service
@@ -137,6 +156,7 @@ class IngestVideoPipeline:
         self.thumbnail_extractor = thumbnail_extractor
         self.cookies_file = cookies_file
         self.proxy = proxy
+        self.messaging_url_guard = messaging_url_guard or MessagingUrlGuard()
 
     async def run(self, job: Job, worker_id: str, heartbeat: LeaseHeartbeat) -> None:
         if job.source_id is None:
@@ -144,6 +164,9 @@ class IngestVideoPipeline:
         payload = json.loads(job.input_json)
         url = str(payload["url"])
         is_local = payload.get("source_kind") == "local"
+        is_messaging = payload.get("messaging_max_duration_seconds") is not None
+        if is_messaging:
+            await enforce_messaging_storage_limit(self.storage_root, payload)
         request_cookies_file = (
             await asyncio.to_thread(
                 resolve_cookie_file_path, str(payload["cookies_file"])
@@ -216,10 +239,14 @@ class IngestVideoPipeline:
                     },
                 )
             else:
+                if is_messaging:
+                    url = await self.messaging_url_guard.validate_input(url)
                 await report_progress(JobStage.PROBING, 5, "正在探测视频元数据")
                 probe = await self.downloader.probe(
                     url, cookies_file=request_cookies_file, proxy=self.proxy
                 )
+                if is_messaging:
+                    url = await self.messaging_url_guard.validate_probe(probe)
                 if probe.is_live:
                     raise ValueError("直播地址请使用直播采集任务")
                 enforce_messaging_duration_limit(probe, payload)

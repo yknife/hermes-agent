@@ -58,7 +58,11 @@ def _settings(profile_home: Path) -> Settings:
         elif name == "messaging_allowed_platforms":
             value = json.loads(value)
         kwargs[name] = value
-    return Settings(_env_file=None, **kwargs)
+    return Settings(
+        _env_file=None,
+        storage_root=profile_home / "video-knowledge" / "storage",
+        **kwargs,
+    )
 
 
 def _resolved_profile_home(raw: str) -> Path:

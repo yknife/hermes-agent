@@ -144,11 +144,13 @@ def _failure_advice(error_code: str, status: str) -> str:
         return "服务当前限流，请稍后重试。"
     if error_code in {"AUTH_REQUIRED", "AUTHENTICATION_FAILED"}:
         return "请在桌面端检查平台登录或 Cookies 配置后重试。"
-    if error_code in {"MEDIA_UNAVAILABLE", "INVALID_SOURCE"}:
+    if error_code in {"MEDIA_UNAVAILABLE", "INVALID_SOURCE", "UNSAFE_URL"}:
         return "请确认视频仍可访问且链接有效。"
     if "ASR" in error_code or "TRANSCRIPT" in error_code:
         return "请在桌面端检查转写设置和任务详情后重试。"
-    if "MODEL" in error_code or "ANALYSIS" in error_code:
+    if error_code == "STORAGE_LIMIT":
+        return "存储空间不足，请在桌面端系统设置中清理或迁移存储后重试。"
+    if "MODEL" in error_code or "ANALYSIS" in error_code or "HERMES" in error_code:
         return "请在桌面端检查 Hermes 模型配置后重新分析。"
     return "请在桌面端任务中心查看状态，排除问题后重试。"
 

@@ -10,6 +10,7 @@ import pytest
 from plugins.video_knowledge.backend.media_adapters.errors import (
     AuthenticationRequiredError,
     MediaUnavailableError,
+    RateLimitedError,
 )
 from plugins.video_knowledge.backend.media_adapters.tools import (
     AsyncCommandRunner,
@@ -217,6 +218,28 @@ async def test_probe_does_not_misclassify_unavailable_video_cookie_hint() -> Non
     ))
     with pytest.raises(MediaUnavailableError, match="视频目前不可用"):
         await YtDlpAdapter(runner=runner).probe("https://example.test/unavailable")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stderr", "error_type", "code"),
+    [
+        ("HTTP Error 412: Precondition Failed", RateLimitedError, "RATE_LIMITED"),
+        ("HTTP Error 429: Too Many Requests", RateLimitedError, "RATE_LIMITED"),
+        (
+            "The supplied cookies have expired",
+            AuthenticationRequiredError,
+            "AUTH_REQUIRED",
+        ),
+    ],
+)
+async def test_probe_maps_stable_messaging_error_codes(
+    stderr, error_type, code
+) -> None:
+    runner = FakeRunner((1, "", stderr))
+    with pytest.raises(error_type) as caught:
+        await YtDlpAdapter(runner=runner).probe("https://example.test/video")
+    assert caught.value.code == code
 
 
 @pytest.mark.asyncio
