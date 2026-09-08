@@ -31,11 +31,15 @@ logger = logging.getLogger(__name__)
 _SAFE_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _TEXT_LIMIT = 6000
 _TITLE_LIMIT = 180
-_SUMMARY_LIMIT = 900
+_SUMMARY_LIMIT = 8_000
 _ITEM_LIMIT = 320
-_MAX_CHAPTERS = 5
-_MAX_POINTS = 5
-_MAX_QA = 3
+# These match KnowledgeService._compact_mapped_bundles. Messaging workflows are
+# already bounded to 30 minutes, and _pack_sections splits the result into
+# transport-safe parts. Taking only the first few chronological items makes a
+# complete analysis look truncated even though later citations are persisted.
+_MAX_CHAPTERS = 18
+_MAX_POINTS = 24
+_MAX_QA = 12
 _MAX_DEGRADED_RANGES = 12
 
 

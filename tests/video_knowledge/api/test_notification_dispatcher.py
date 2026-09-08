@@ -264,6 +264,68 @@ async def test_renderer_chunks_long_details_with_numbered_stable_parts(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_renderer_includes_complete_bounded_timeline(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        item_id = await _seed(database)
+        async with database.session() as session, session.begin():
+            summary = await session.scalar(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.document_type == "summary"
+                )
+            )
+            summary.content_json = json.dumps(
+                {
+                    "summary": ("前段内容。" * 190) + "结尾摘要标记。",
+                    "degraded": False,
+                    "degraded_ranges": [],
+                },
+                ensure_ascii=False,
+            )
+            specifications = {
+                "chapters": (18, "title", "summary"),
+                "knowledge_points": (24, "title", "content"),
+                "suggested_qa": (12, "question", "answer"),
+            }
+            for document_type, (
+                count,
+                heading_field,
+                body_field,
+            ) in specifications.items():
+                document = await session.scalar(
+                    select(KnowledgeDocument).where(
+                        KnowledgeDocument.document_type == document_type
+                    )
+                )
+                content = []
+                for index in range(count):
+                    item = {
+                        heading_field: f"{document_type}-{index}",
+                        body_field: f"内容-{index}",
+                        "citation": {
+                            "segment_ids": [f"segment-{index}"],
+                            "start_ms": index * 75_000,
+                            "end_ms": index * 75_000 + 5_000,
+                        },
+                    }
+                    content.append(item)
+                document.content_json = json.dumps(content, ensure_ascii=False)
+
+        dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
+        rendered = "\n".join(
+            part.content
+            for part in render_notification(await dispatcher._load_view(item_id))
+        )
+        assert "结尾摘要标记。" in rendered
+        assert "chapters-17" in rendered
+        assert "knowledge\\_points-23" in rendered
+        assert "suggested\\_qa-11" in rendered
+        assert "21:15–21:20" in rendered
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_failure_renderer_exposes_only_safe_code_stage_and_advice(tmp_path):
     database = await _database(tmp_path)
     try:
