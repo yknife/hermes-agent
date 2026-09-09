@@ -118,19 +118,35 @@ def normalize_url(raw_url: str) -> tuple[str, str]:
     if address is not None and not address.is_global:
         raise InvalidSourceUrlError("不允许访问私有或本机网络地址")
     port = f":{parsed.port}" if parsed.port else ""
+    platform = _platform_for_host(host)
     params = sorted(
         (key, val)
         for key, val in parse_qsl(parsed.query, keep_blank_values=True)
         if not key.lower().startswith("utm_") and key.lower() not in TRACKING_PARAMS
     )
+    path = parsed.path or "/"
+    if platform == "douyin" and path.rstrip("/").lower() in {
+        "",
+        "/discover",
+        "/jingxuan",
+    }:
+        modal_id = next(
+            (value for key, value in params if key.lower() == "modal_id"),
+            None,
+        )
+        if modal_id is not None and modal_id.isdecimal():
+            # Douyin exposes videos opened from its discovery/featured overlays
+            # as ``?modal_id=...`` URLs. yt-dlp supports the equivalent stable
+            # work page, so normalize before probing and persistence.
+            path = f"/video/{modal_id}"
+            params = []
     canonical = urlunsplit((
         parsed.scheme.lower(),
         host + port,
-        parsed.path or "/",
+        path,
         urlencode(params),
         "",
     ))
-    platform = _platform_for_host(host)
     return canonical, platform
 
 

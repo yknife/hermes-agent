@@ -63,6 +63,25 @@ def test_normalize_url_removes_tracking_and_fragment() -> None:
     assert platform == "youtube"
 
 
+@pytest.mark.parametrize("path", ["/jingxuan", "/discover", "/"])
+def test_normalize_url_converts_douyin_modal_to_stable_video_url(path: str) -> None:
+    canonical, platform = normalize_url(
+        f"https://www.douyin.com{path}?modal_id=7672313492216548651&utm_source=test"
+    )
+
+    assert canonical == "https://www.douyin.com/video/7672313492216548651"
+    assert platform == "douyin"
+
+
+def test_normalize_url_keeps_non_numeric_douyin_modal_safe() -> None:
+    canonical, platform = normalize_url(
+        "https://www.douyin.com/jingxuan?modal_id=not-a-video"
+    )
+
+    assert canonical == ("https://www.douyin.com/jingxuan?modal_id=not-a-video")
+    assert platform == "douyin"
+
+
 def test_classify_source_type_distinguishes_live_rooms_from_videos() -> None:
     assert (
         classify_source_type("https://live.bilibili.com/123", "bilibili")
