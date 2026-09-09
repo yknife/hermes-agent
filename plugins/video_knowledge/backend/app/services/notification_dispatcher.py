@@ -31,15 +31,7 @@ logger = logging.getLogger(__name__)
 _SAFE_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _TEXT_LIMIT = 6000
 _TITLE_LIMIT = 180
-_SUMMARY_LIMIT = 8_000
-_ITEM_LIMIT = 320
-# These match KnowledgeService._compact_mapped_bundles. Messaging workflows are
-# already bounded to 30 minutes, and _pack_sections splits the result into
-# transport-safe parts. Taking only the first few chronological items makes a
-# complete analysis look truncated even though later citations are persisted.
-_MAX_CHAPTERS = 18
-_MAX_POINTS = 24
-_MAX_QA = 12
+_SUMMARY_LIMIT = 900
 _MAX_DEGRADED_RANGES = 12
 
 
@@ -141,6 +133,30 @@ def _citation(item: object) -> str:
     return f"（{_clock(citation.get('start_ms'))}–{_clock(citation.get('end_ms'))}）"
 
 
+def _knowledge_coverage(documents: dict[str, KnowledgeDocument]) -> str | None:
+    starts: list[int] = []
+    ends: list[int] = []
+    for document_type in ("chapters", "knowledge_points", "suggested_qa"):
+        document = documents.get(document_type)
+        items = _json(document.content_json, []) if document else []
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            citation = item.get("citation") if isinstance(item, dict) else None
+            if not isinstance(citation, dict):
+                continue
+            try:
+                start = max(0, int(citation.get("start_ms")))
+                end = max(start, int(citation.get("end_ms")))
+            except (TypeError, ValueError):
+                continue
+            starts.append(start)
+            ends.append(end)
+    if not starts:
+        return None
+    return f"{_clock(min(starts))}–{_clock(max(ends))}"
+
+
 def _failure_advice(error_code: str, status: str) -> str:
     if status == "CANCELLED":
         return "任务已取消；媒体与已有结果仍会保留。"
@@ -212,7 +228,10 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
                 f"**作者：** {_text(media.author, 100)}",
                 f"**时长：** {_duration(media.duration_seconds)}",
                 "**结论：**",
-                _text(summary.get("summary"), _SUMMARY_LIMIT),
+                _text(
+                    summary.get("notification_summary") or summary.get("summary"),
+                    _SUMMARY_LIMIT,
+                ),
             ])
         ]
         ranges = summary.get("degraded_ranges")
@@ -228,48 +247,14 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
                 lines.append("- 具体范围未记录")
             sections.append("\n".join(lines))
 
-        chapters = (
-            _json(docs["chapters"].content_json, []) if "chapters" in docs else []
+        coverage = _knowledge_coverage(docs)
+        detail_lines = ["### 完整结果"]
+        if coverage:
+            detail_lines.append(f"知识时间线：{coverage}")
+        detail_lines.append(
+            "完整章节、知识点和建议问答请在 Hermes Desktop 的 VKC 中查看。"
         )
-        if isinstance(chapters, list) and chapters:
-            lines = ["### 章节"]
-            for item in chapters[:_MAX_CHAPTERS]:
-                if isinstance(item, dict):
-                    lines.append(
-                        f"- **{_text(item.get('title'), 100)}** {_citation(item)}："
-                        f"{_text(item.get('summary'), _ITEM_LIMIT)}"
-                    )
-            sections.append("\n".join(lines))
-
-        points = (
-            _json(docs["knowledge_points"].content_json, [])
-            if "knowledge_points" in docs
-            else []
-        )
-        if isinstance(points, list) and points:
-            lines = ["### 知识点"]
-            for item in points[:_MAX_POINTS]:
-                if isinstance(item, dict):
-                    lines.append(
-                        f"- **{_text(item.get('title'), 100)}** {_citation(item)}："
-                        f"{_text(item.get('content'), _ITEM_LIMIT)}"
-                    )
-            sections.append("\n".join(lines))
-
-        qa = (
-            _json(docs["suggested_qa"].content_json, [])
-            if "suggested_qa" in docs
-            else []
-        )
-        if isinstance(qa, list) and qa:
-            lines = ["### 建议问答"]
-            for item in qa[:_MAX_QA]:
-                if isinstance(item, dict):
-                    lines.extend([
-                        f"- **问：** {_text(item.get('question'), 180)} {_citation(item)}",
-                        f"  **答：** {_text(item.get('answer'), _ITEM_LIMIT)}",
-                    ])
-            sections.append("\n".join(lines))
+        sections.append("\n".join(detail_lines))
 
         versions = [doc.version for doc in docs.values()]
         sections.append(

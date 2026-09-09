@@ -209,7 +209,7 @@ async def test_renderer_marks_fallback_and_escapes_untrusted_content(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_renderer_chunks_long_details_with_numbered_stable_parts(tmp_path):
+async def test_renderer_omits_long_details_from_messaging_digest(tmp_path):
     database = await _database(tmp_path)
     try:
         item_id = await _seed(database)
@@ -252,19 +252,16 @@ async def test_renderer_chunks_long_details_with_numbered_stable_parts(tmp_path)
 
         dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
         parts = render_notification(await dispatcher._load_view(item_id))
-        assert len(parts) > 1
-        assert [part.number for part in parts] == list(range(1, len(parts) + 1))
-        assert all(part.total == len(parts) for part in parts)
-        assert [part.idempotency_key for part in parts] == [
-            f"notification-1:part:{index}" for index in range(1, len(parts) + 1)
-        ]
-        assert all(f"通知 {part.number}/{part.total}" in part.content for part in parts)
+        assert len(parts) == 1
+        assert "0-" + ("T" * 100) not in parts[0].content
+        assert "完整章节、知识点和建议问答请在 Hermes Desktop" in parts[0].content
+        assert "知识时间线：00:00–00:01" in parts[0].content
     finally:
         await database.dispose()
 
 
 @pytest.mark.asyncio
-async def test_renderer_includes_complete_bounded_timeline(tmp_path):
+async def test_renderer_uses_model_digest_and_reports_complete_timeline(tmp_path):
     database = await _database(tmp_path)
     try:
         item_id = await _seed(database)
@@ -277,6 +274,7 @@ async def test_renderer_includes_complete_bounded_timeline(tmp_path):
             summary.content_json = json.dumps(
                 {
                     "summary": ("前段内容。" * 190) + "结尾摘要标记。",
+                    "notification_summary": "大模型生成的全片短摘要。",
                     "degraded": False,
                     "degraded_ranges": [],
                 },
@@ -299,13 +297,14 @@ async def test_renderer_includes_complete_bounded_timeline(tmp_path):
                 )
                 content = []
                 for index in range(count):
+                    start_ms = round(index * 1_275_000 / (count - 1))
                     item = {
                         heading_field: f"{document_type}-{index}",
                         body_field: f"内容-{index}",
                         "citation": {
                             "segment_ids": [f"segment-{index}"],
-                            "start_ms": index * 75_000,
-                            "end_ms": index * 75_000 + 5_000,
+                            "start_ms": start_ms,
+                            "end_ms": start_ms + 5_000,
                         },
                     }
                     content.append(item)
@@ -316,11 +315,12 @@ async def test_renderer_includes_complete_bounded_timeline(tmp_path):
             part.content
             for part in render_notification(await dispatcher._load_view(item_id))
         )
-        assert "结尾摘要标记。" in rendered
-        assert "chapters-17" in rendered
-        assert "knowledge\\_points-23" in rendered
-        assert "suggested\\_qa-11" in rendered
-        assert "21:15–21:20" in rendered
+        assert "大模型生成的全片短摘要。" in rendered
+        assert "结尾摘要标记。" not in rendered
+        assert "chapters-17" not in rendered
+        assert "knowledge\\_points-23" not in rendered
+        assert "suggested\\_qa-11" not in rendered
+        assert "知识时间线：00:00–21:20" in rendered
     finally:
         await database.dispose()
 

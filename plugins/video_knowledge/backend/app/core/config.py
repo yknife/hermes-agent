@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     # Adaptive analysis uses 24..96 segments according to transcript duration;
     # this remains the operator-controlled safety ceiling.
     analysis_max_chunk_segments: int = 96
-    analysis_prompt_version: str = "1.2.2"
+    analysis_prompt_version: str = "1.3.0"
     analysis_structured_attempts: int = 2
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]

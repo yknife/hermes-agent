@@ -47,6 +47,9 @@ class FakeHermesClient:
         self.calls += 1
         self.selections.append((provider, model))
         assert "不可信" in system_prompt
+        if schema_name == "video_knowledge_notification_summary":
+            assert "完整视频知识结果" in user_prompt
+            return {"summary": "大模型生成的飞书全片摘要"}
         assert schema_name == "video_knowledge_analysis"
         assert '"segment_id":"s1"' in user_prompt
         segment_ids = re.findall(r'"segment_id":"([^"]+)"', user_prompt)
@@ -813,9 +816,13 @@ async def test_analysis_persists_four_versioned_documents(tmp_path: Path) -> Non
         "suggested_qa",
     }
     assert [item.id for item in reused] == [item.id for item in first]
-    assert client.calls == 1
-    assert progress == [(1, 1)]
+    assert client.calls == 2
+    assert progress == [(1, 2), (2, 2)]
     summary = next(item for item in first if item.document_type == "summary")
     assert json.loads(summary.content_json)["degraded"] is False
     assert json.loads(summary.content_json)["degraded_ranges"] == []
+    assert (
+        json.loads(summary.content_json)["notification_summary"]
+        == "大模型生成的飞书全片摘要"
+    )
     await database.dispose()
