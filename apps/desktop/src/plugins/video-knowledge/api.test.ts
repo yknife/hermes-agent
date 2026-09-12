@@ -4,6 +4,7 @@ import {
   analyze,
   bindApi,
   deleteMedia,
+  fetchCookieSettings,
   fetchRuntimeStatus,
   fetchStorageSettings,
   ingest,
@@ -11,7 +12,8 @@ import {
   mediaPlaybackUrl,
   mediaThumbnailUrl,
   migrateStorage,
-  probeSource
+  probeSource,
+  updateCookieSettings
 } from './api'
 import type { IngestOptions, LocalIngestOptions } from './types'
 
@@ -128,6 +130,25 @@ describe('video knowledge plugin API', () => {
       body: { target_path: String.raw`E:\VideoKnowledge` },
       method: 'PUT',
       timeoutMs: 30_000
+    })
+  })
+
+  it('reads and updates per-platform cookie files', async () => {
+    const rest = vi.fn().mockResolvedValue({ platforms: [] })
+
+    dispose.push(bindApi(rest))
+    await fetchCookieSettings()
+    await updateCookieSettings('bilibili', String.raw`C:\private\bilibili-cookies.txt`)
+    await updateCookieSettings('bilibili', null)
+
+    expect(rest).toHaveBeenNthCalledWith(1, '/system/cookies', undefined)
+    expect(rest).toHaveBeenNthCalledWith(2, '/system/cookies/bilibili', {
+      body: { cookies_file: String.raw`C:\private\bilibili-cookies.txt` },
+      method: 'PUT'
+    })
+    expect(rest).toHaveBeenNthCalledWith(3, '/system/cookies/bilibili', {
+      body: { cookies_file: null },
+      method: 'PUT'
     })
   })
 

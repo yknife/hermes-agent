@@ -11,12 +11,18 @@ from plugins.video_knowledge.backend.app.schemas.system import (
     ASRSettingsUpdate,
     ASRStatusResponse,
     ComponentHealth,
+    CookiePlatform,
+    CookieSettingsResponse,
+    CookieSettingsUpdate,
     HealthResponse,
     RuntimeStatusResponse,
     StorageMigrationRequest,
     StorageSettingsResponse,
 )
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.runtime_service import (
     RuntimeReadinessService,
 )
@@ -70,6 +76,26 @@ async def runtime_status(
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> RuntimeStatusResponse:
     return await RuntimeReadinessService(settings).status()
+
+
+@router.get("/cookies", response_model=CookieSettingsResponse)
+async def cookie_settings(
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> CookieSettingsResponse:
+    return await CookieSettingsService(database, request.app.state.settings).status()
+
+
+@router.put("/cookies/{platform}", response_model=CookieSettingsResponse)
+async def update_cookie_settings(
+    platform: CookiePlatform,
+    payload: CookieSettingsUpdate,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> CookieSettingsResponse:
+    return await CookieSettingsService(database, request.app.state.settings).update(
+        platform, payload.cookies_file
+    )
 
 
 @router.get("/storage", response_model=StorageSettingsResponse)

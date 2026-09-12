@@ -40,6 +40,21 @@ export interface StorageSettings {
   migration: StorageMigrationStatus
 }
 
+export type CookiePlatform = 'bilibili' | 'douyin' | 'xiaohongshu' | 'youtube' | 'vimeo' | 'twitch'
+
+export interface PlatformCookieSetting {
+  platform: CookiePlatform
+  label: string
+  cookies_file: null | string
+  file_name: null | string
+  configured: boolean
+  available: boolean
+}
+
+export interface CookieSettings {
+  platforms: PlatformCookieSetting[]
+}
+
 export interface AsrStatus {
   enabled: boolean
   model: string

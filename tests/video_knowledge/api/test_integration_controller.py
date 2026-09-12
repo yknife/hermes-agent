@@ -36,8 +36,10 @@ async def test_controller_runs_without_a_separate_http_service(
         start_worker=False,
     )
     controller = VideoKnowledgeController(runtime)
+    observed_cookie_files: list[Path | None] = []
 
     async def fake_probe(*_args, **_kwargs) -> MediaProbe:
+        observed_cookie_files.append(_kwargs.get("cookies_file"))
         return MediaProbe(
             external_id="probe",
             title="Probe preview",
@@ -73,6 +75,14 @@ async def test_controller_runs_without_a_separate_http_service(
     )
 
     health = await controller.dispatch("GET", "/system/health")
+    cookies_path = tmp_path / "youtube-cookies.txt"
+    cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    await controller.dispatch(
+        "PUT",
+        "/system/cookies/youtube",
+        payload={"cookies_file": str(cookies_path)},
+    )
+    cookie_settings = await controller.dispatch("GET", "/system/cookies")
     ingest = await controller.dispatch(
         "POST",
         "/sources/ingest",
@@ -104,7 +114,9 @@ async def test_controller_runs_without_a_separate_http_service(
     live_sources = await controller.dispatch("GET", "/sources/live")
     jobs = await controller.dispatch("GET", "/jobs")
     probe = await controller.dispatch(
-        "POST", "/sources/probe", payload={"url": "https://example.test/video"}
+        "POST",
+        "/sources/probe",
+        payload={"url": "https://www.youtube.com/watch?v=controller-test"},
     )
     live_probe = await controller.dispatch(
         "POST",
@@ -164,6 +176,13 @@ async def test_controller_runs_without_a_separate_http_service(
     assert probe.body["title"] == "Probe preview"
     assert probe.body["source_type"] == "VIDEO"
     assert probe.body["subtitles"][0]["language"] == "zh-CN"
+    assert observed_cookie_files == [cookies_path.resolve()]
+    youtube_cookies = next(
+        item
+        for item in cookie_settings.body["platforms"]
+        if item["platform"] == "youtube"
+    )
+    assert youtube_cookies["available"] is True
     assert live_probe.body["source_type"] == "LIVE"
     assert live_probe.body["title"] == "测试直播间"
     assert live_probe.body["is_live"] is False

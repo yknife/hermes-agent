@@ -3,6 +3,8 @@ import { type PluginRestOptions, queryClient } from '@hermes/plugin-sdk'
 import type {
   AsrSettingsUpdate,
   AsrStatus,
+  CookiePlatform,
+  CookieSettings,
   Health,
   IngestOptions,
   IngestResult,
@@ -55,6 +57,12 @@ function call<T>(path: string, options?: PluginRestOptions): Promise<T> {
 export const fetchHealth = () => call<Health>('/system/health')
 export const fetchRuntimeStatus = () => call<RuntimeStatus>('/system/runtime')
 export const fetchStorageSettings = () => call<StorageSettings>('/system/storage')
+export const fetchCookieSettings = () => call<CookieSettings>('/system/cookies')
+export const updateCookieSettings = (platform: CookiePlatform, cookiesFile: null | string) =>
+  call<CookieSettings>(`/system/cookies/${encodeURIComponent(platform)}`, {
+    method: 'PUT',
+    body: { cookies_file: cookiesFile }
+  })
 export const migrateStorage = (targetPath: string) =>
   call<StorageSettings>('/system/storage', {
     method: 'PUT',

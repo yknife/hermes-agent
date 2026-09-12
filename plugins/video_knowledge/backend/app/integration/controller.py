@@ -42,6 +42,7 @@ from plugins.video_knowledge.backend.app.schemas.media import (
 )
 from plugins.video_knowledge.backend.app.schemas.system import (
     ASRSettingsUpdate,
+    CookieSettingsUpdate,
     StorageMigrationRequest,
 )
 from plugins.video_knowledge.backend.app.schemas.transcripts import (
@@ -50,6 +51,9 @@ from plugins.video_knowledge.backend.app.schemas.transcripts import (
     TranscriptSegmentRead,
 )
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import (
     JobQueryService,
     JobStateMachine,
@@ -116,6 +120,10 @@ class VideoKnowledgeController:
             return self._json(
                 await RuntimeReadinessService(self.runtime.settings).status()
             )
+        if method == "GET" and parts == ["system", "cookies"]:
+            return self._json(
+                await CookieSettingsService(database, self.runtime.settings).status()
+            )
         if method == "GET" and parts == ["system", "storage"]:
             if self.runtime.storage_manager is None:
                 raise RuntimeError("存储迁移服务尚未初始化")
@@ -138,6 +146,13 @@ class VideoKnowledgeController:
             service = ASRSettingsService(database, self.runtime.settings)
             await service.update(ASRSettingsUpdate.model_validate(payload))
             return self._json(await service.status())
+        if method == "PUT" and len(parts) == 3 and parts[:2] == ["system", "cookies"]:
+            request = CookieSettingsUpdate.model_validate(payload)
+            return self._json(
+                await CookieSettingsService(database, self.runtime.settings).update(
+                    parts[2], request.cookies_file
+                )
+            )
         if (
             method == "POST"
             and len(parts) == 5
@@ -204,7 +219,7 @@ class VideoKnowledgeController:
             cookies_file = (
                 resolve_cookie_file_path(probe_request.cookies_file)
                 if probe_request.cookies_file
-                else settings.yt_dlp_cookies_file
+                else await CookieSettingsService(database, settings).resolve(platform)
             )
             if classify_source_type(url, platform) == SourceType.LIVE:
                 try:
@@ -228,6 +243,14 @@ class VideoKnowledgeController:
         if parts == ["sources", "ingest"] and method == "POST":
             defaults = ASRSettingsService(database, self.runtime.settings).defaults()
             ingest_request = SourceIngestRequest.model_validate({**defaults, **payload})
+            _canonical, platform = normalize_url(str(ingest_request.url))
+            cookies_file = (
+                resolve_cookie_file_path(ingest_request.cookies_file)
+                if ingest_request.cookies_file
+                else await CookieSettingsService(
+                    database, self.runtime.settings
+                ).resolve(platform)
+            )
             source, job, media, duplicate = await SourceService(database).ingest(
                 str(ingest_request.url),
                 max_height=ingest_request.max_height,
@@ -243,11 +266,7 @@ class VideoKnowledgeController:
                     "auto_analyze": ingest_request.auto_analyze,
                     "analysis_provider": ingest_request.analysis_provider,
                     "analysis_model": ingest_request.analysis_model,
-                    "cookies_file": (
-                        str(resolve_cookie_file_path(ingest_request.cookies_file))
-                        if ingest_request.cookies_file
-                        else None
-                    ),
+                    "cookies_file": str(cookies_file) if cookies_file else None,
                 },
                 actor=actor,
             )

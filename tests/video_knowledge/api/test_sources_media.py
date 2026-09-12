@@ -82,6 +82,18 @@ def test_normalize_url_keeps_non_numeric_douyin_modal_safe() -> None:
     assert platform == "douyin"
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.xiaohongshu.com/explore/123",
+        "https://xhslink.com/a/short-link",
+    ],
+)
+def test_normalize_url_recognizes_xiaohongshu_hosts(url: str) -> None:
+    _canonical, platform = normalize_url(url)
+    assert platform == "xiaohongshu"
+
+
 def test_classify_source_type_distinguishes_live_rooms_from_videos() -> None:
     assert (
         classify_source_type("https://live.bilibili.com/123", "bilibili")
@@ -123,14 +135,29 @@ def test_ingest_cookie_path_is_persisted_for_worker_but_redacted_from_api(
     settings = Settings(database_url=database_url, storage_root=tmp_path / "storage")
 
     with TestClient(create_app(settings)) as client:
+        configured = client.put(
+            "/api/v1/system/cookies/youtube",
+            json={"cookies_file": str(cookies)},
+        )
         response = client.post(
             "/api/v1/sources/ingest",
             json={
                 "url": "https://www.youtube.com/watch?v=06rHoEpiuYY",
-                "cookies_file": str(cookies),
             },
         )
 
+    assert configured.status_code == 200
+    youtube = next(
+        item for item in configured.json()["platforms"] if item["platform"] == "youtube"
+    )
+    assert youtube == {
+        "platform": "youtube",
+        "label": "YouTube",
+        "cookies_file": str(cookies.resolve()),
+        "file_name": "cookies.txt",
+        "configured": True,
+        "available": True,
+    }
     assert response.status_code == 201
     assert "cookies_file" not in response.json()["job"]["input"]
 

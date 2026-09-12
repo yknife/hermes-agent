@@ -25,6 +25,9 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.schemas.messaging import CollectVideoArguments
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import (
     JobStateMachine,
     new_id,
@@ -230,6 +233,9 @@ class CollectionService:
                         cache_hit = True
                         reused = True
                 if workflow is None:
+                    cookies_file = await CookieSettingsService(
+                        self.database, self.settings
+                    ).resolve(platform, session=session)
                     workflow = CollectionWorkflow(
                         id=new_id("workflow"),
                         source_id=source.id,
@@ -251,6 +257,11 @@ class CollectionService:
                             ),
                             "messaging_min_free_bytes": (
                                 self.settings.messaging_min_free_bytes
+                            ),
+                            **(
+                                {"cookies_file": str(cookies_file)}
+                                if cookies_file
+                                else {}
                             ),
                         },
                         session=session,

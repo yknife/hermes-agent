@@ -3,6 +3,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+CookiePlatform = Literal[
+    "bilibili",
+    "douyin",
+    "xiaohongshu",
+    "youtube",
+    "vimeo",
+    "twitch",
+]
+
 
 class ComponentHealth(BaseModel):
     status: Literal["ok", "error"]
@@ -75,6 +84,23 @@ class RuntimeToolStatus(BaseModel):
 class RuntimeStatusResponse(BaseModel):
     ready: bool
     tools: list[RuntimeToolStatus]
+
+
+class PlatformCookieSetting(BaseModel):
+    platform: CookiePlatform
+    label: str
+    cookies_file: str | None = None
+    file_name: str | None = None
+    configured: bool = False
+    available: bool = False
+
+
+class CookieSettingsResponse(BaseModel):
+    platforms: list[PlatformCookieSetting]
+
+
+class CookieSettingsUpdate(BaseModel):
+    cookies_file: str | None = Field(default=None, max_length=32767)
 
 
 class StorageMigrationRequest(BaseModel):

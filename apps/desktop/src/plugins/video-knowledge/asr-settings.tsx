@@ -7,17 +7,22 @@ import { useEffect, useState } from 'react'
 import {
   downloadAsrModel,
   fetchAsrStatus,
+  fetchCookieSettings,
   fetchRuntimeStatus,
   fetchStorageSettings,
   migrateStorage,
-  updateAsrSettings
+  updateAsrSettings,
+  updateCookieSettings
 } from './api'
 import { errorMessage, fileSize } from './format'
-import type { AsrSettingsUpdate, AsrStatus, StorageMigrationPhase, StorageSettings } from './types'
+import type {
+  AsrSettingsUpdate, AsrStatus, CookiePlatform, CookieSettings, StorageMigrationPhase, StorageSettings
+} from './types'
 
 const STATUS_KEY = ['video-knowledge', 'system', 'asr'] as const
 const RUNTIME_KEY = ['video-knowledge', 'system', 'runtime'] as const
 const STORAGE_KEY = ['video-knowledge', 'system', 'storage'] as const
+const COOKIE_KEY = ['video-knowledge', 'system', 'cookies'] as const
 const ACTIVE_MIGRATION_PHASES = new Set<StorageMigrationPhase>(['COPYING', 'VERIFYING', 'SWITCHING', 'CLEANING'])
 
 export function SystemSettingsView() {
@@ -84,6 +89,8 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
 
         <StorageSettingsSection />
 
+        <CookieSettingsSection />
+
         <RuntimeReadiness />
 
         <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
@@ -141,6 +148,109 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
         </section>
       </div>
     </div>
+  )
+}
+
+function CookieSettingsSection() {
+  const queryClient = useQueryClient()
+
+  const cookies = useQuery({
+    queryFn: fetchCookieSettings,
+    queryKey: COOKIE_KEY,
+    refetchOnMount: 'always'
+  })
+
+  const choose = useMutation({
+    mutationFn: async (platform: CookiePlatform) => {
+      const paths = await host.selectPaths({
+        filters: [{ name: 'Netscape Cookies 文件', extensions: ['txt'] }],
+        multiple: false,
+        title: '选择 Netscape Cookies 文件'
+      })
+
+      return paths[0] ? updateCookieSettings(platform, paths[0]) : null
+    },
+    onSuccess: value => {
+      if (value) {
+        queryClient.setQueryData<CookieSettings>(COOKIE_KEY, value)
+      }
+    }
+  })
+
+  const remove = useMutation({
+    mutationFn: (platform: CookiePlatform) => updateCookieSettings(platform, null),
+    onSuccess: value => queryClient.setQueryData<CookieSettings>(COOKIE_KEY, value)
+  })
+
+  return (
+    <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">平台 Cookies</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            为需要登录或触发平台风控的视频配置 Netscape cookies.txt。系统只保存本地文件路径，文件内容不会发送给大模型。
+          </p>
+        </div>
+        <Badge variant="outline">按平台配置</Badge>
+      </div>
+
+      {cookies.isLoading ? (
+        <Loader className="mt-5" />
+      ) : cookies.isError ? (
+        <div className="mt-4 text-xs text-destructive">{errorMessage(cookies.error, '读取 Cookies 配置失败')}</div>
+      ) : (
+        <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
+          {cookies.data?.platforms.map(item => {
+            const choosing = choose.isPending && choose.variables === item.platform
+            const removing = remove.isPending && remove.variables === item.platform
+
+            return (
+              <div className="rounded-md border border-(--ui-stroke-secondary) bg-background/40 p-4" key={item.platform}>
+                <div className="flex items-center justify-between gap-3">
+                  <strong className="text-sm">{item.label}</strong>
+                  <Badge variant={item.available ? 'default' : 'outline'}>
+                    {item.available ? '已配置' : item.configured ? '文件不可用' : '未配置'}
+                  </Badge>
+                </div>
+                <div className="mt-2 min-h-8 break-all text-[0.6875rem] leading-4 text-muted-foreground">
+                  {item.cookies_file ?? '未选择文件'}
+                </div>
+                <div className="mt-3 flex gap-2">
+                  <Button
+                    disabled={choose.isPending || remove.isPending}
+                    onClick={() => choose.mutate(item.platform)}
+                    size="sm"
+                    type="button"
+                    variant="secondary"
+                  >
+                    <Codicon name="folder-opened" />
+                    {choosing ? '选择中…' : item.configured ? '更换文件' : '选择文件'}
+                  </Button>
+                  {item.configured && (
+                    <Button
+                      disabled={choose.isPending || remove.isPending}
+                      onClick={() => remove.mutate(item.platform)}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      <Codicon name="trash" />
+                      {removing ? '移除中…' : '移除'}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      <p className="mt-3 text-[0.6875rem] text-muted-foreground">
+        新建任务会按链接平台自动使用对应文件；添加内容时临时选择的 Cookies 文件会覆盖这里的默认配置。
+      </p>
+      {choose.error && <div className="mt-3 text-xs text-destructive">{errorMessage(choose.error, '配置 Cookies 文件失败')}</div>}
+      {remove.error && <div className="mt-3 text-xs text-destructive">{errorMessage(remove.error, '移除 Cookies 配置失败')}</div>}
+    </section>
   )
 }
 

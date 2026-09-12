@@ -19,6 +19,9 @@ from plugins.video_knowledge.backend.app.schemas.media import (
     SourceRead,
 )
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.live_service import LiveSourceService
 from plugins.video_knowledge.backend.app.services.media_service import (
     MediaService,
@@ -38,13 +41,17 @@ router = APIRouter(prefix="/sources", tags=["sources"])
 
 
 @router.post("/probe", response_model=ProbeRead)
-async def probe_source(payload: SourceProbeRequest, request: Request) -> ProbeRead:
+async def probe_source(
+    payload: SourceProbeRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> ProbeRead:
     url, platform = normalize_url(str(payload.url))
     settings = request.app.state.settings
     cookies_file = (
         resolve_cookie_file_path(payload.cookies_file)
         if payload.cookies_file
-        else settings.yt_dlp_cookies_file
+        else await CookieSettingsService(database, settings).resolve(platform)
     )
     if classify_source_type(url, platform) == SourceType.LIVE:
         try:
@@ -69,6 +76,14 @@ async def ingest_source(
     request: Request,
     database: Annotated[Database, Depends(get_database)],
 ) -> IngestRead:
+    _canonical, platform = normalize_url(str(payload.url))
+    cookies_file = (
+        resolve_cookie_file_path(payload.cookies_file)
+        if payload.cookies_file
+        else await CookieSettingsService(database, request.app.state.settings).resolve(
+            platform
+        )
+    )
     defaults = ASRSettingsService(database, request.app.state.settings).defaults()
     provided = payload.model_fields_set
     source, job, media, duplicate = await SourceService(database).ingest(
@@ -82,11 +97,7 @@ async def ingest_source(
             },
             "analysis_provider": payload.analysis_provider,
             "analysis_model": payload.analysis_model,
-            "cookies_file": (
-                str(resolve_cookie_file_path(payload.cookies_file))
-                if payload.cookies_file
-                else None
-            ),
+            "cookies_file": str(cookies_file) if cookies_file else None,
         },
         actor=f"api:{request.state.request_id}",
     )

@@ -26,6 +26,9 @@ from plugins.video_knowledge.backend.app.services.collection_service import (
     CollectionOrigin,
     CollectionService,
 )
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.messaging_tools import (
     cancel_collection,
@@ -83,6 +86,25 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
                 "messaging_max_duration_seconds": 1800,
                 "messaging_min_free_bytes": 2 * 1024 * 1024 * 1024,
             }
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_messaging_collection_uses_platform_cookie_setting(tmp_path):
+    database, service = await _service(tmp_path / "app.db")
+    cookies = tmp_path / "bilibili-cookies.txt"
+    cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+    try:
+        await CookieSettingsService(database, service.settings).update(
+            "bilibili", str(cookies)
+        )
+        accepted = await service.collect("https://b23.tv/Cookie123", _origin())
+
+        async with database.session() as session:
+            job = await session.get(Job, accepted["job_id"])
+            assert job is not None
+            assert json.loads(job.input_json)["cookies_file"] == str(cookies.resolve())
     finally:
         await database.dispose()
 
