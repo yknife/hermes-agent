@@ -85,6 +85,18 @@ def test_normalize_url_keeps_non_numeric_douyin_modal_safe() -> None:
 @pytest.mark.parametrize(
     "url",
     [
+        "https://v.douyin.com/iRNBho6u/",
+        "https://www.iesdouyin.com/share/video/7672313492216548651/",
+    ],
+)
+def test_normalize_url_recognizes_douyin_share_hosts(url: str) -> None:
+    _canonical, platform = normalize_url(url)
+    assert platform == "douyin"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
         "https://www.xiaohongshu.com/explore/123",
         "https://xhslink.com/a/short-link",
     ],

@@ -91,15 +91,24 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_messaging_collection_uses_platform_cookie_setting(tmp_path):
+@pytest.mark.parametrize(
+    ("platform", "url"),
+    [
+        ("bilibili", "https://b23.tv/Cookie123"),
+        ("douyin", "https://www.douyin.com/video/7672313492216548651"),
+    ],
+)
+async def test_messaging_collection_uses_platform_cookie_setting(
+    tmp_path, platform, url
+):
     database, service = await _service(tmp_path / "app.db")
-    cookies = tmp_path / "bilibili-cookies.txt"
+    cookies = tmp_path / f"{platform}-cookies.txt"
     cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
     try:
         await CookieSettingsService(database, service.settings).update(
-            "bilibili", str(cookies)
+            platform, str(cookies)
         )
-        accepted = await service.collect("https://b23.tv/Cookie123", _origin())
+        accepted = await service.collect(url, _origin())
 
         async with database.session() as session:
             job = await session.get(Job, accepted["job_id"])

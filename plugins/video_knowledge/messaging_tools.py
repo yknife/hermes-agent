@@ -152,8 +152,9 @@ MESSAGING_TOOLS = tuple(
     for name, description, contract, handler in (
         (
             "collect_video",
-            "Queue one Bilibili video for collection and analysis. Immediately acknowledge "
-            "the returned workflow ID; never poll in a loop. Completion is pushed to the "
+            "Queue one Bilibili or Douyin video for collection and analysis. "
+            "Immediately acknowledge the returned workflow ID; never poll in a loop. "
+            "Completion is pushed to the "
             "trusted originating Feishu conversation.",
             CollectVideoArguments,
             collect_video,
@@ -191,7 +192,7 @@ _FAST_COLLECT_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
 def fast_collect_url(text: str) -> str | None:
-    """Extract one explicit Bilibili collection URL for Gateway fast admission."""
+    """Extract one explicit allowlisted video URL for Gateway fast admission."""
     value = str(text or "")
     if not any(intent in value for intent in _FAST_COLLECT_INTENTS):
         return None

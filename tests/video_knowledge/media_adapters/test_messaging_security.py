@@ -77,16 +77,76 @@ async def test_short_link_and_probe_must_resolve_to_bilibili_video() -> None:
             title="fixture",
             webpage_url=resolved,
             platform="BiliBili",
-        )
+        ),
+        expected_platform="bilibili",
     )
     assert probe_url == resolved
 
-    with pytest.raises(UnsafeUrlError, match="不是允许"):
+    with pytest.raises(UnsafeUrlError):
         await guard.validate_probe(
             MediaProbe(
                 external_id="fixture",
                 title="fixture",
                 webpage_url="https://www.bilibili.com/video/BV1GJ411x7h7/",
                 platform="generic",
-            )
+            ),
+            expected_platform="bilibili",
         )
+
+
+@pytest.mark.asyncio
+async def test_douyin_short_link_and_probe_remain_on_douyin() -> None:
+    direct = "https://www.douyin.com/video/7672313492216548651"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": direct})
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    assert await guard.validate_input("https://v.douyin.com/iRNBho6u/") == direct
+    assert (
+        await guard.validate_probe(
+            MediaProbe(
+                external_id="7672313492216548651",
+                title="fixture",
+                webpage_url=direct,
+                platform="Douyin",
+            ),
+            expected_platform="douyin",
+        )
+        == direct
+    )
+
+
+@pytest.mark.asyncio
+async def test_douyin_modal_url_is_canonicalized_before_network_access() -> None:
+    seen: list[tuple[str, int]] = []
+
+    def resolver(host: str, port: int) -> tuple[str, ...]:
+        seen.append((host, port))
+        return ("8.8.8.8",)
+
+    guard = MessagingUrlGuard(resolver=resolver)
+    value = await guard.validate_input(
+        "https://www.douyin.com/jingxuan?modal_id=7672313492216548651&from=web"
+    )
+    assert value == "https://www.douyin.com/video/7672313492216548651"
+    assert seen == [("www.douyin.com", 443)]
+
+
+@pytest.mark.asyncio
+async def test_short_link_cannot_redirect_between_allowlisted_platforms() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"location": "https://www.bilibili.com/video/BV1GJ411x7h7"},
+        )
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(UnsafeUrlError):
+        await guard.validate_input("https://v.douyin.com/iRNBho6u/")

@@ -1,4 +1,4 @@
-"""Network admission guard for messaging-originated Bilibili collection."""
+"""Network admission guard for messaging-originated video collection."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 
 from plugins.video_knowledge.backend.app.domain.messaging_url import (
-    is_b23_url,
-    validate_bilibili_messaging_url,
+    is_messaging_short_url,
+    messaging_video_platform,
+    validate_messaging_video_url,
 )
 from plugins.video_knowledge.backend.media_adapters.errors import (
     MediaUnavailableError,
@@ -50,8 +51,9 @@ class MessagingUrlGuard:
 
     async def validate_input(self, value: str) -> str:
         current = self._validate_shape(value)
+        expected_platform = messaging_video_platform(current)
         await self._validate_dns(current)
-        if not is_b23_url(current):
+        if not is_messaging_short_url(current):
             return current
         async with httpx.AsyncClient(
             follow_redirects=False,
@@ -68,9 +70,12 @@ class MessagingUrlGuard:
                     location = response.headers.get("location", "")
                     if not location:
                         raise UnsafeUrlError("短链重定向缺少目标地址")
-                    current = self._validate_shape(urljoin(current, location))
+                    current = self._validate_shape(
+                        urljoin(current, location),
+                        expected_platform=expected_platform,
+                    )
                     await self._validate_dns(current)
-                    if not is_b23_url(current):
+                    if not is_messaging_short_url(current):
                         return current
                     continue
                 if response.status_code in {412, 429}:
@@ -79,25 +84,34 @@ class MessagingUrlGuard:
                     )
                 if response.status_code in {404, 410}:
                     raise MediaUnavailableError("该视频目前不可用")
-                if 200 <= response.status_code < 300 and not is_b23_url(current):
+                if 200 <= response.status_code < 300 and not is_messaging_short_url(
+                    current
+                ):
                     return current
                 raise UnsafeUrlError("短链没有解析到允许的视频地址")
         raise UnsafeUrlError("短链重定向次数超过安全限制")
 
-    async def validate_probe(self, probe: MediaProbe) -> str:
+    async def validate_probe(self, probe: MediaProbe, *, expected_platform: str) -> str:
         platform = str(probe.platform or "").casefold()
-        if "bili" not in platform:
-            raise UnsafeUrlError("媒体探测结果不是允许的 Bilibili 视频")
-        resolved = self._validate_shape(probe.webpage_url)
-        if is_b23_url(resolved):
+        platform_matches = (expected_platform == "bilibili" and "bili" in platform) or (
+            expected_platform == "douyin" and "douyin" in platform
+        )
+        if not platform_matches:
+            raise UnsafeUrlError("媒体探测结果与请求的视频平台不一致")
+        resolved = self._validate_shape(
+            probe.webpage_url, expected_platform=expected_platform
+        )
+        if is_messaging_short_url(resolved):
             raise UnsafeUrlError("媒体探测结果仍是未解析短链")
         await self._validate_dns(resolved)
         return resolved
 
     @staticmethod
-    def _validate_shape(value: str) -> str:
+    def _validate_shape(value: str, *, expected_platform: str | None = None) -> str:
         try:
-            return validate_bilibili_messaging_url(value)
+            return validate_messaging_video_url(
+                value, expected_platform=expected_platform
+            )
         except ValueError as exc:
             raise UnsafeUrlError("视频地址不在允许范围内") from exc
 

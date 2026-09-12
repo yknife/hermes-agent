@@ -12,6 +12,9 @@ from plugins.video_knowledge.backend.app.domain.errors import (
     InvalidLocalMediaError,
     JobLeaseLostError,
 )
+from plugins.video_knowledge.backend.app.domain.messaging_url import (
+    messaging_video_platform,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Job, MediaAsset
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.backend.app.services.media_service import (
@@ -239,14 +242,22 @@ class IngestVideoPipeline:
                     },
                 )
             else:
+                messaging_platform: str | None = None
                 if is_messaging:
                     url = await self.messaging_url_guard.validate_input(url)
+                    messaging_platform = messaging_video_platform(url)
                 await report_progress(JobStage.PROBING, 5, "正在探测视频元数据")
                 probe = await self.downloader.probe(
                     url, cookies_file=request_cookies_file, proxy=self.proxy
                 )
                 if is_messaging:
-                    url = await self.messaging_url_guard.validate_probe(probe)
+                    if messaging_platform is None:
+                        raise RuntimeError(
+                            "Messaging platform validation was not initialized"
+                        )
+                    url = await self.messaging_url_guard.validate_probe(
+                        probe, expected_platform=messaging_platform
+                    )
                 if probe.is_live:
                     raise ValueError("直播地址请使用直播采集任务")
                 enforce_messaging_duration_limit(probe, payload)

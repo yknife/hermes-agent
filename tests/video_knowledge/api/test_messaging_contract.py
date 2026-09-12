@@ -68,11 +68,24 @@ def test_invalid_messaging_policy_fails_closed(values):
         "https://m.bilibili.com/video/BV1GJ411x7h7",
         "https://b23.tv/AbCd123",
         "http://www.bilibili.com/video/BV1GJ411x7h7",
+        "https://www.douyin.com/video/7672313492216548651",
+        "http://www.douyin.com/video/7672313492216548651?from=share",
+        "https://v.douyin.com/iRNBho6u/",
+        "https://www.iesdouyin.com/share/video/7672313492216548651/",
     ],
 )
 def test_collect_contract_accepts_only_video_link_shape(url):
     expected = "https://" + url.split("://", 1)[1]
     assert CollectVideoArguments(url=url).url == expected
+
+
+def test_collect_contract_canonicalizes_douyin_modal_video_url():
+    assert (
+        CollectVideoArguments(
+            url="https://www.douyin.com/jingxuan?modal_id=7672313492216548651&from=web"
+        ).url
+        == "https://www.douyin.com/video/7672313492216548651"
+    )
 
 
 @pytest.mark.parametrize(
@@ -91,6 +104,12 @@ def test_collect_contract_accepts_only_video_link_shape(url):
         "https://b23.tv/",
         "https://b23.tv.evil.test/AbCd123",
         "https://b23.tv/AbCd123\n",
+        "https://live.douyin.com/123456",
+        "https://www.douyin.com/user/MS4wLjABAAAA",
+        "https://www.douyin.com/video/not-numeric",
+        "https://v.douyin.com/",
+        "https://v.douyin.com.evil.test/iRNBho6u/",
+        "https://www.iesdouyin.com/share/user/123",
         "https://[invalid/",
     ],
 )
@@ -149,3 +168,5 @@ def test_fast_collect_url_requires_one_explicit_intent_and_allowed_url():
     assert fast_collect_url(url) is None
     assert fast_collect_url(f"分析 {url} 和 https://b23.tv/AbCd123") is None
     assert fast_collect_url("分析 https://example.com/video/BV1Sxbp6REnB") is None
+    douyin = "https://www.douyin.com/video/7672313492216548651"
+    assert fast_collect_url(f"采集并分析这个抖音视频：{douyin}") == douyin

@@ -8,7 +8,7 @@ service must also verify DNS, redirects and the authoritative media type.
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from plugins.video_knowledge.backend.app.domain.messaging_url import (
-    validate_bilibili_messaging_url,
+    validate_messaging_video_url,
 )
 
 
@@ -20,7 +20,7 @@ class CollectVideoArguments(BaseModel):
     @field_validator("url")
     @classmethod
     def validate_video_url(cls, value: str) -> str:
-        return validate_bilibili_messaging_url(value)
+        return validate_messaging_video_url(value)
 
 
 class CollectionStatusArguments(BaseModel):
