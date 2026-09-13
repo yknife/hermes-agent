@@ -19,6 +19,7 @@ import type {
   LocalIngestOptions,
   Media,
   MediaDeleteResult,
+  MessagingQuotaSettings,
   PlaybackInfo,
   Probe,
   RuntimeStatus,
@@ -62,6 +63,13 @@ export const updateCookieSettings = (platform: CookiePlatform, cookiesFile: null
   call<CookieSettings>(`/system/cookies/${encodeURIComponent(platform)}`, {
     method: 'PUT',
     body: { cookies_file: cookiesFile }
+  })
+export const fetchMessagingQuotaSettings = () =>
+  call<MessagingQuotaSettings>('/system/messaging-quotas')
+export const updateMessagingQuotaSettings = (value: MessagingQuotaSettings) =>
+  call<MessagingQuotaSettings>('/system/messaging-quotas', {
+    method: 'PUT',
+    body: value
   })
 export const migrateStorage = (targetPath: string) =>
   call<StorageSettings>('/system/storage', {

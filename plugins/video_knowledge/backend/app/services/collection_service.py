@@ -34,6 +34,9 @@ from plugins.video_knowledge.backend.app.services.job_service import (
     utc_now,
 )
 from plugins.video_knowledge.backend.app.services.media_service import normalize_url
+from plugins.video_knowledge.backend.app.services.messaging_quota_service import (
+    MessagingQuotaSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.outbox_service import (
     queue_terminal_notifications,
 )
@@ -299,6 +302,11 @@ class CollectionService:
     async def _enforce_quotas(
         self, session: AsyncSession, origin: CollectionOrigin
     ) -> None:
+        quotas = await MessagingQuotaSettingsService(
+            self.database, self.settings
+        ).status(session=session)
+        if not quotas.enabled:
+            return
         user_subscriptions = list(
             (
                 await session.scalars(
@@ -344,13 +352,33 @@ class CollectionService:
 
         user_active = await active_count(user_subscriptions)
         chat_active = await active_count(chat_subscriptions)
-        if (
-            user_daily >= self.settings.messaging_max_submissions_per_user_per_day
-            or chat_daily >= self.settings.messaging_max_submissions_per_chat_per_day
-            or user_active >= self.settings.messaging_max_active_per_user
-            or chat_active >= self.settings.messaging_max_active_per_chat
-        ):
-            raise CollectionAccessError("Messaging collection quota exceeded.")
+        exceeded = next(
+            (
+                (label, current, limit)
+                for current, limit, label in (
+                    (
+                        user_daily,
+                        quotas.max_submissions_per_user_per_day,
+                        "用户每日提交",
+                    ),
+                    (
+                        chat_daily,
+                        quotas.max_submissions_per_chat_per_day,
+                        "会话每日提交",
+                    ),
+                    (user_active, quotas.max_active_per_user, "用户活跃任务"),
+                    (chat_active, quotas.max_active_per_chat, "会话活跃任务"),
+                )
+                if current >= limit
+            ),
+            None,
+        )
+        if exceeded is not None:
+            label, current, limit = exceeded
+            raise CollectionAccessError(
+                f"飞书采集限额已达到：{label} {current}/{limit}。"
+                "请等待任务结束、等待每日计数重置，或在 VKC 系统设置中调整。"
+            )
 
     async def _enforce_storage_capacity(self, session: AsyncSession) -> None:
         root = self.settings.storage_root

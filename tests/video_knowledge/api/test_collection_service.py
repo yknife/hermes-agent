@@ -21,6 +21,7 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     WorkflowSubscription,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.schemas.system import MessagingQuotaSettings
 from plugins.video_knowledge.backend.app.services.collection_service import (
     CollectionAccessError,
     CollectionOrigin,
@@ -30,6 +31,9 @@ from plugins.video_knowledge.backend.app.services.cookie_settings_service import
     CookieSettingsService,
 )
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
+from plugins.video_knowledge.backend.app.services.messaging_quota_service import (
+    MessagingQuotaSettingsService,
+)
 from plugins.video_knowledge.messaging_tools import (
     cancel_collection,
     collect_video,
@@ -315,7 +319,7 @@ async def test_gate_and_user_quotas_fail_closed(tmp_path):
     )
     try:
         await service.collect("https://b23.tv/AbCd123", _origin())
-        with pytest.raises(CollectionAccessError, match="quota"):
+        with pytest.raises(CollectionAccessError, match="用户每日提交 1/1"):
             await service.collect(
                 "https://b23.tv/Other123", _origin(message="message-b")
             )
@@ -329,6 +333,29 @@ async def test_gate_and_user_quotas_fail_closed(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_messaging_quota_switch_disables_all_limits(tmp_path):
+    database, service = await _service(
+        tmp_path / "app.db",
+        messaging_max_submissions_per_user_per_day=1,
+        messaging_max_active_per_user=1,
+    )
+    try:
+        quota_service = MessagingQuotaSettingsService(database, service.settings)
+        defaults = quota_service.defaults()
+        await quota_service.update(
+            MessagingQuotaSettings(**{**defaults.model_dump(), "enabled": False})
+        )
+
+        await service.collect("https://b23.tv/First123", _origin())
+        second = await service.collect(
+            "https://b23.tv/Second123", _origin(message="message-b")
+        )
+        assert second["status"] == WorkflowStatus.PENDING.value
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_chat_quota_cannot_be_bypassed_with_different_users(tmp_path):
     database, service = await _service(
         tmp_path / "app.db",
@@ -337,7 +364,7 @@ async def test_chat_quota_cannot_be_bypassed_with_different_users(tmp_path):
     )
     try:
         await service.collect("https://b23.tv/First123", _origin(user="user-a"))
-        with pytest.raises(CollectionAccessError, match="quota"):
+        with pytest.raises(CollectionAccessError, match="会话活跃任务 1/1"):
             await service.collect(
                 "https://b23.tv/Second123",
                 _origin(user="user-b", message="message-b"),

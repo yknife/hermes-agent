@@ -8,21 +8,25 @@ import {
   downloadAsrModel,
   fetchAsrStatus,
   fetchCookieSettings,
+  fetchMessagingQuotaSettings,
   fetchRuntimeStatus,
   fetchStorageSettings,
   migrateStorage,
   updateAsrSettings,
-  updateCookieSettings
+  updateCookieSettings,
+  updateMessagingQuotaSettings
 } from './api'
 import { errorMessage, fileSize } from './format'
 import type {
-  AsrSettingsUpdate, AsrStatus, CookiePlatform, CookieSettings, StorageMigrationPhase, StorageSettings
+  AsrSettingsUpdate, AsrStatus, CookiePlatform, CookieSettings, MessagingQuotaSettings,
+  StorageMigrationPhase, StorageSettings
 } from './types'
 
 const STATUS_KEY = ['video-knowledge', 'system', 'asr'] as const
 const RUNTIME_KEY = ['video-knowledge', 'system', 'runtime'] as const
 const STORAGE_KEY = ['video-knowledge', 'system', 'storage'] as const
 const COOKIE_KEY = ['video-knowledge', 'system', 'cookies'] as const
+const MESSAGING_QUOTA_KEY = ['video-knowledge', 'system', 'messaging-quotas'] as const
 const ACTIVE_MIGRATION_PHASES = new Set<StorageMigrationPhase>(['COPYING', 'VERIFYING', 'SWITCHING', 'CLEANING'])
 
 export function SystemSettingsView() {
@@ -91,6 +95,8 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
 
         <CookieSettingsSection />
 
+        <MessagingQuotaSettingsSection />
+
         <RuntimeReadiness />
 
         <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
@@ -148,6 +154,104 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
         </section>
       </div>
     </div>
+  )
+}
+
+function MessagingQuotaSettingsSection() {
+  const queryClient = useQueryClient()
+  const [form, setForm] = useState<MessagingQuotaSettings | null>(null)
+  const [saved, setSaved] = useState(false)
+
+  const quotas = useQuery({
+    queryFn: fetchMessagingQuotaSettings,
+    queryKey: MESSAGING_QUOTA_KEY,
+    refetchOnMount: 'always'
+  })
+
+  useEffect(() => {
+    if (quotas.data && !form) {
+      setForm(quotas.data)
+    }
+  }, [form, quotas.data])
+
+  const save = useMutation({
+    mutationFn: updateMessagingQuotaSettings,
+    onSuccess: value => {
+      queryClient.setQueryData<MessagingQuotaSettings>(MESSAGING_QUOTA_KEY, value)
+      setForm(value)
+      setSaved(true)
+    }
+  })
+
+  const patch = <K extends keyof MessagingQuotaSettings>(key: K, value: MessagingQuotaSettings[K]) => {
+    setSaved(false)
+    setForm(previous => previous ? { ...previous, [key]: value } : previous)
+  }
+
+  const values = form ? [
+    form.max_active_per_user,
+    form.max_active_per_chat,
+    form.max_submissions_per_user_per_day,
+    form.max_submissions_per_chat_per_day
+  ] : []
+
+  const invalid = !form || values.some(value => !Number.isInteger(value)) ||
+    form.max_active_per_user < 1 || form.max_active_per_user > 10 ||
+    form.max_active_per_chat < 1 || form.max_active_per_chat > 50 ||
+    form.max_submissions_per_user_per_day < 1 || form.max_submissions_per_user_per_day > 1000 ||
+    form.max_submissions_per_chat_per_day < 1 || form.max_submissions_per_chat_per_day > 5000
+
+  return (
+    <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold">飞书采集限额</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            限制远程消息创建的下载、ASR 和分析任务。关闭后，飞书采集不再检查并发和每日提交数量。
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant={form?.enabled ? 'default' : 'outline'}>{form?.enabled ? '已启用' : '已关闭'}</Badge>
+          <Switch
+            checked={form?.enabled ?? true}
+            disabled={!form || save.isPending}
+            onCheckedChange={value => patch('enabled', value)}
+          />
+        </div>
+      </div>
+
+      {quotas.isError ? (
+        <div className="mt-4 text-xs text-destructive">{errorMessage(quotas.error, '读取飞书限额失败')}</div>
+      ) : quotas.isLoading || !form ? (
+        <Loader className="mt-5" />
+      ) : (
+        <>
+          <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <Field label="每用户同时活跃">
+              <Input max="10" min="1" onChange={event => patch('max_active_per_user', Number(event.target.value))} type="number" value={form.max_active_per_user} />
+            </Field>
+            <Field label="每会话同时活跃">
+              <Input max="50" min="1" onChange={event => patch('max_active_per_chat', Number(event.target.value))} type="number" value={form.max_active_per_chat} />
+            </Field>
+            <Field label="每用户每日提交">
+              <Input max="1000" min="1" onChange={event => patch('max_submissions_per_user_per_day', Number(event.target.value))} type="number" value={form.max_submissions_per_user_per_day} />
+            </Field>
+            <Field label="每会话每日提交">
+              <Input max="5000" min="1" onChange={event => patch('max_submissions_per_chat_per_day', Number(event.target.value))} type="number" value={form.max_submissions_per_chat_per_day} />
+            </Field>
+          </div>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Button disabled={invalid || save.isPending} onClick={() => save.mutate(form)} type="button">
+              <Codicon name="save" />
+              {save.isPending ? '保存中…' : '保存飞书限额'}
+            </Button>
+            {saved && <span className="text-xs text-emerald-600 dark:text-emerald-300">配置已保存并立即生效</span>}
+            {invalid && <span className="text-xs text-destructive">请输入允许范围内的整数</span>}
+            {save.error && <span className="text-xs text-destructive">{errorMessage(save.error, '保存飞书限额失败')}</span>}
+          </div>
+        </>
+      )}
+    </section>
   )
 }
 

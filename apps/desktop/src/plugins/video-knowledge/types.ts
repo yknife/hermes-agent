@@ -55,6 +55,14 @@ export interface CookieSettings {
   platforms: PlatformCookieSetting[]
 }
 
+export interface MessagingQuotaSettings {
+  enabled: boolean
+  max_active_per_user: number
+  max_active_per_chat: number
+  max_submissions_per_user_per_day: number
+  max_submissions_per_chat_per_day: number
+}
+
 export interface AsrStatus {
   enabled: boolean
   model: string

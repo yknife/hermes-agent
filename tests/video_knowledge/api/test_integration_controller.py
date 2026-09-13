@@ -83,6 +83,20 @@ async def test_controller_runs_without_a_separate_http_service(
         payload={"cookies_file": str(cookies_path)},
     )
     cookie_settings = await controller.dispatch("GET", "/system/cookies")
+    messaging_quota_defaults = await controller.dispatch(
+        "GET", "/system/messaging-quotas"
+    )
+    messaging_quota_updated = await controller.dispatch(
+        "PUT",
+        "/system/messaging-quotas",
+        payload={
+            "enabled": False,
+            "max_active_per_user": 4,
+            "max_active_per_chat": 8,
+            "max_submissions_per_user_per_day": 100,
+            "max_submissions_per_chat_per_day": 300,
+        },
+    )
     ingest = await controller.dispatch(
         "POST",
         "/sources/ingest",
@@ -183,6 +197,15 @@ async def test_controller_runs_without_a_separate_http_service(
         if item["platform"] == "youtube"
     )
     assert youtube_cookies["available"] is True
+    assert messaging_quota_defaults.body == {
+        "enabled": True,
+        "max_active_per_user": 1,
+        "max_active_per_chat": 3,
+        "max_submissions_per_user_per_day": 10,
+        "max_submissions_per_chat_per_day": 30,
+    }
+    assert messaging_quota_updated.body["enabled"] is False
+    assert messaging_quota_updated.body["max_submissions_per_user_per_day"] == 100
     assert live_probe.body["source_type"] == "LIVE"
     assert live_probe.body["title"] == "测试直播间"
     assert live_probe.body["is_live"] is False

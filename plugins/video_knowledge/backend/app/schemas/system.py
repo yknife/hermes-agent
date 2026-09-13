@@ -103,6 +103,14 @@ class CookieSettingsUpdate(BaseModel):
     cookies_file: str | None = Field(default=None, max_length=32767)
 
 
+class MessagingQuotaSettings(BaseModel):
+    enabled: bool = True
+    max_active_per_user: int = Field(default=1, ge=1, le=10)
+    max_active_per_chat: int = Field(default=3, ge=1, le=50)
+    max_submissions_per_user_per_day: int = Field(default=10, ge=1, le=1000)
+    max_submissions_per_chat_per_day: int = Field(default=30, ge=1, le=5000)
+
+
 class StorageMigrationRequest(BaseModel):
     target_path: str = Field(min_length=1, max_length=32767)
 

@@ -15,6 +15,7 @@ from plugins.video_knowledge.backend.app.schemas.system import (
     CookieSettingsResponse,
     CookieSettingsUpdate,
     HealthResponse,
+    MessagingQuotaSettings,
     RuntimeStatusResponse,
     StorageMigrationRequest,
     StorageSettingsResponse,
@@ -22,6 +23,9 @@ from plugins.video_knowledge.backend.app.schemas.system import (
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
 from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
     CookieSettingsService,
+)
+from plugins.video_knowledge.backend.app.services.messaging_quota_service import (
+    MessagingQuotaSettingsService,
 )
 from plugins.video_knowledge.backend.app.services.runtime_service import (
     RuntimeReadinessService,
@@ -96,6 +100,27 @@ async def update_cookie_settings(
     return await CookieSettingsService(database, request.app.state.settings).update(
         platform, payload.cookies_file
     )
+
+
+@router.get("/messaging-quotas", response_model=MessagingQuotaSettings)
+async def messaging_quota_settings(
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> MessagingQuotaSettings:
+    return await MessagingQuotaSettingsService(
+        database, request.app.state.settings
+    ).status()
+
+
+@router.put("/messaging-quotas", response_model=MessagingQuotaSettings)
+async def update_messaging_quota_settings(
+    payload: MessagingQuotaSettings,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> MessagingQuotaSettings:
+    return await MessagingQuotaSettingsService(
+        database, request.app.state.settings
+    ).update(payload)
 
 
 @router.get("/storage", response_model=StorageSettingsResponse)

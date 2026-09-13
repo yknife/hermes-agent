@@ -43,6 +43,7 @@ from plugins.video_knowledge.backend.app.schemas.media import (
 from plugins.video_knowledge.backend.app.schemas.system import (
     ASRSettingsUpdate,
     CookieSettingsUpdate,
+    MessagingQuotaSettings,
     StorageMigrationRequest,
 )
 from plugins.video_knowledge.backend.app.schemas.transcripts import (
@@ -68,6 +69,9 @@ from plugins.video_knowledge.backend.app.services.media_service import (
     classify_source_type,
     normalize_url,
     resolve_cookie_file_path,
+)
+from plugins.video_knowledge.backend.app.services.messaging_quota_service import (
+    MessagingQuotaSettingsService,
 )
 from plugins.video_knowledge.backend.app.services.runtime_service import (
     RuntimeReadinessService,
@@ -124,6 +128,12 @@ class VideoKnowledgeController:
             return self._json(
                 await CookieSettingsService(database, self.runtime.settings).status()
             )
+        if method == "GET" and parts == ["system", "messaging-quotas"]:
+            return self._json(
+                await MessagingQuotaSettingsService(
+                    database, self.runtime.settings
+                ).status()
+            )
         if method == "GET" and parts == ["system", "storage"]:
             if self.runtime.storage_manager is None:
                 raise RuntimeError("存储迁移服务尚未初始化")
@@ -152,6 +162,13 @@ class VideoKnowledgeController:
                 await CookieSettingsService(database, self.runtime.settings).update(
                     parts[2], request.cookies_file
                 )
+            )
+        if method == "PUT" and parts == ["system", "messaging-quotas"]:
+            request = MessagingQuotaSettings.model_validate(payload)
+            return self._json(
+                await MessagingQuotaSettingsService(
+                    database, self.runtime.settings
+                ).update(request)
             )
         if (
             method == "POST"
