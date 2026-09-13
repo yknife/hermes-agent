@@ -98,6 +98,25 @@ def _make_adapter(platform_val="telegram"):
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
+    @pytest.mark.asyncio
+    async def test_explicit_video_collection_bypasses_busy_agent(self):
+        runner, _sentinel = _make_runner()
+        runner._try_deliver_fast_video_knowledge = AsyncMock(return_value=True)
+        event = _make_event(
+            text="采集并分析：https://b23.tv/wVP8ecC",
+            platform_val="feishu",
+        )
+        session_key = build_session_key(event.source)
+
+        handled = await runner._handle_active_session_busy_message(
+            event, session_key
+        )
+
+        assert handled is True
+        runner._try_deliver_fast_video_knowledge.assert_awaited_once_with(
+            event, event.source, session_key=session_key
+        )
+
 
     @pytest.mark.asyncio
     async def test_telegram_grace_followups_respect_queue_fifo(self, monkeypatch):
@@ -469,5 +488,4 @@ class TestLongRunningNotificationOwnership:
         assert runner._should_emit_long_running_notification(
             "sess", original_agent, executor_task=None
         ) is False
-
 

@@ -20,7 +20,8 @@
  *  - otherwise                    → open on 9222, or HERMES_DESKTOP_CDP_PORT.
  *
  * `HERMES_DESKTOP_CDP_PORT=off` (or `0` / `false`) opts out for anyone who
- * wants the port closed on a dev run.
+ * wants the port closed on a dev run. VKC's Windows launcher uses this mode
+ * so Agent browser tools cannot attach to and navigate the application UI.
  *
  * The port binds to loopback (Chromium's default) and the address is
  * deliberately not configurable: there is no reason to expose a renderer

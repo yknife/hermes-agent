@@ -9986,6 +9986,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True  # handled (silently dropped); do not fall through
 
+        # Explicit VKC collection requests are independent durable jobs. Admit
+        # them before steer/queue/clarify routing so an unrelated active Agent
+        # turn can never reinterpret a video URL or open it in a browser.
+        if await self._try_deliver_fast_video_knowledge(
+            event, event.source, session_key=session_key
+        ):
+            return True
+
         effective_mode = self._effective_busy_input_mode(event.source)
 
         # --- Draining case (gateway restarting/stopping) ---
@@ -16582,6 +16590,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
         allow_gateway_control = event.allow_gateway_control
+
+        # This also runs on the clarify-bypass path. A fresh, explicit video
+        # collection request must not be consumed as the answer to an older
+        # Agent question.
+        if await self._try_deliver_fast_video_knowledge(
+            event, source, session_key=_quick_key
+        ):
+            return ""
+
         _up_state = self._peek_session_state(_quick_key)
         if (
             allow_gateway_control
@@ -18630,7 +18647,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _try_fast_admit_video_knowledge(
         self, event: MessageEvent, source: SessionSource, session_id: str
     ) -> Optional[str]:
-        """Persist an explicit Feishu Bilibili request before an LLM round trip."""
+        """Persist an explicit Feishu video request before an LLM round trip."""
         platform = getattr(source.platform, "value", source.platform)
         if (
             str(platform) != "feishu"
@@ -18675,6 +18692,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"状态：{state}\n"
             "完成或失败后会自动回复当前飞书会话。"
         )
+
+    async def _try_deliver_fast_video_knowledge(
+        self,
+        event: MessageEvent,
+        source: SessionSource,
+        *,
+        session_key: str,
+    ) -> bool:
+        """Admit and acknowledge an explicit VKC request outside Agent routing."""
+        from plugins.video_knowledge.messaging_tools import fast_collect_url
+
+        if fast_collect_url(getattr(event, "text", "")) is None:
+            return False
+        session_entry = await self.async_session_store.lookup_by_session_key(
+            session_key
+        )
+        if session_entry is None:
+            session_entry = await self.async_session_store.get_or_create_session(source)
+        fast_reply = await self._try_fast_admit_video_knowledge(
+            event, source, session_entry.session_id
+        )
+        if fast_reply is None:
+            return False
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            raise RuntimeError("Feishu adapter became unavailable during admission")
+        send_result = await adapter.send(
+            source.chat_id,
+            fast_reply,
+            metadata=self._thread_metadata_for_source(
+                source, self._reply_anchor_for_event(event)
+            ),
+        )
+        if not getattr(send_result, "success", False):
+            raise RuntimeError("Feishu admission reply delivery failed")
+        logger.info("Video Knowledge priority admission reply delivered")
+        return True
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -18757,27 +18811,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
             session_entry = resolved_entry
         self._cache_session_source(session_key, source)
-        fast_reply = await self._try_fast_admit_video_knowledge(
-            event, source, session_entry.session_id
-        )
-        if fast_reply is not None:
-            adapter = self._adapter_for_source(source)
-            if adapter is None:
-                raise RuntimeError("Feishu adapter became unavailable during admission")
-            send_result = await adapter.send(
-                source.chat_id,
-                fast_reply,
-                metadata=self._thread_metadata_for_source(
-                    source, self._reply_anchor_for_event(event)
-                ),
-            )
-            if not getattr(send_result, "success", False):
-                raise RuntimeError("Feishu admission reply delivery failed")
-            logger.info(
-                "Video Knowledge fast admission reply delivered in %.3fs",
-                time.time() - _msg_start_time,
-            )
-            return
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:
                 binding = (await self._session_db.get_telegram_topic_binding(
