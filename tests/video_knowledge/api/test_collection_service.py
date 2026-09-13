@@ -87,7 +87,7 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
                 "url": "https://b23.tv/AbCd123",
                 "auto_analyze": True,
                 "max_height": 720,
-                "messaging_max_duration_seconds": 1800,
+                "messaging_max_duration_seconds": 10800,
                 "messaging_min_free_bytes": 2 * 1024 * 1024 * 1024,
             }
     finally:
@@ -271,9 +271,9 @@ async def test_retry_refreshes_douyin_cookies_and_returns_platform_guidance(tmp_
         async with database.session() as session:
             refreshed_job = await session.get(Job, claimed.id)
             assert refreshed_job is not None
-            assert json.loads(refreshed_job.input_json)["cookies_file"] == str(
-                cookies.resolve()
-            )
+            refreshed_input = json.loads(refreshed_job.input_json)
+            assert refreshed_input["cookies_file"] == str(cookies.resolve())
+            assert refreshed_input["messaging_max_duration_seconds"] == 10800
     finally:
         await database.dispose()
 

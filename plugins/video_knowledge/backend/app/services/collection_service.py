@@ -537,7 +537,12 @@ class CollectionService:
                 job_id,
                 actor="messaging",
                 input_updates=(
-                    {"cookies_file": str(cookies_file) if cookies_file else None}
+                    {
+                        "cookies_file": str(cookies_file) if cookies_file else None,
+                        "messaging_max_duration_seconds": (
+                            self.settings.messaging_max_video_duration_seconds
+                        ),
+                    }
                     if refresh_cookie_config
                     else None
                 ),
