@@ -68,6 +68,22 @@ def test_feishu_human_still_checked_against_allowlist_when_bot_policy_set(monkey
     assert runner._is_user_authorized(_make_feishu_human_source("ou_human")) is True
 
 
+def test_feishu_pairing_does_not_authorize_until_approved(monkeypatch):
+    from gateway.config import GatewayConfig, PlatformConfig
+
+    monkeypatch.setenv("FEISHU_ALLOWED_USERS", "ou_owner")
+    runner = _make_bare_runner()
+    runner.config = GatewayConfig(platforms={
+        Platform.FEISHU: PlatformConfig(extra={"unauthorized_dm_behavior": "pair"})
+    })
+    source = _make_feishu_human_source("ou_new")
+    source.chat_type = "dm"
+    assert runner._get_unauthorized_dm_behavior(Platform.FEISHU) == "pair"
+    assert runner._is_user_authorized(source) is False
+    runner.pairing_store = SimpleNamespace(is_approved=lambda platform, user: user == "ou_new")
+    assert runner._is_user_authorized(source) is True
+
+
 def test_feishu_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
     """FEISHU_ALLOW_BOTS=all must not authorize Telegram/Discord bot sources."""
     runner = _make_bare_runner()

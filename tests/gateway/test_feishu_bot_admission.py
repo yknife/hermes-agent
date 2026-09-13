@@ -288,6 +288,16 @@ def test_dm_pairing_mode_forwards_unknown_sender_to_gateway_intake(monkeypatch):
     assert adapter._admit(sender, message) is None
 
 
+@pytest.mark.parametrize("behavior,expected", [("pair", None), ("ignore", "dm_policy_rejected")])
+def test_explicit_pairing_with_existing_owner_allowlist(monkeypatch, behavior, expected):
+    monkeypatch.delenv("FEISHU_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    adapter = make_adapter_skeleton()
+    adapter._allowed_group_users = frozenset({"ou_owner"})
+    adapter.config = SimpleNamespace(extra={"unauthorized_dm_behavior": behavior})
+    assert adapter._admit(make_sender(open_id="ou_new"), make_message(chat_type="p2p")) == expected
+
+
 # --- Per-group require_mention override ------------------------------------
 
 

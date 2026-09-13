@@ -2622,7 +2622,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         reason = self._admit(sender, message)
         if reason is not None:
-            logger.debug("[Feishu] dropping inbound event: %s", reason)
+            logger.info("[Feishu] dropping inbound event: %s", reason)
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
@@ -4376,6 +4376,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "bot_not_mentioned"
 
         if not is_group:
+            # Explicit pairing must reach Gateway even when an owner allowlist
+            # exists. Gateway still checks approval before running any Agent.
+            extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+            if str(extra.get("unauthorized_dm_behavior", "")).strip().lower() == "pair":
+                return None
             if os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
                 return None
             if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
