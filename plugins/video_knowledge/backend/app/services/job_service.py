@@ -26,6 +26,7 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Job,
     JobAttempt,
     JobEvent,
+    WorkflowSubscription,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.identity import new_id, utc_now
@@ -214,6 +215,65 @@ class JobStateMachine:
             except BaseException:
                 await session.rollback()
                 raise
+
+    async def queue_live_continuation(
+        self, parent: Job, worker_id: str, payload: dict[str, Any]
+    ) -> Job | None:
+        """Persist the next hourly recording and trusted subscriptions atomically."""
+        async with self.database.session() as session, session.begin():
+            current = await self._get_job(session, parent.id)
+            self._assert_worker_lease(current, worker_id)
+            if current.cancel_requested_at or not current.workflow_id:
+                return None
+            existing = await session.scalar(
+                select(Job).where(
+                    Job.parent_job_id == parent.id,
+                    Job.type == JobType.RECORD_LIVE.value,
+                )
+            )
+            if existing is not None:
+                return existing
+            workflow = CollectionWorkflow(
+                id=new_id("workflow"),
+                source_id=current.source_id,
+                status=WorkflowStatus.PENDING.value,
+            )
+            session.add(workflow)
+            await session.flush()
+            child = await self.create(
+                job_type=JobType.RECORD_LIVE,
+                input_data=payload,
+                priority=50,
+                source_id=current.source_id,
+                workflow_id=workflow.id,
+                parent_job_id=parent.id,
+                actor=f"worker:{worker_id}",
+                session=session,
+            )
+            subscriptions = (
+                await session.scalars(
+                    select(WorkflowSubscription).where(
+                        WorkflowSubscription.workflow_id == current.workflow_id
+                    )
+                )
+            ).all()
+            for sub in subscriptions:
+                session.add(
+                    WorkflowSubscription(
+                        id=new_id("subscription"),
+                        workflow_id=workflow.id,
+                        platform=sub.platform,
+                        user_id=sub.user_id,
+                        chat_id=sub.chat_id,
+                        thread_id=sub.thread_id,
+                        message_id=sub.message_id,
+                        session_id=sub.session_id,
+                        inbound_idempotency_key=new_id("livepart"),
+                        delivery_policy=sub.delivery_policy,
+                        is_owner=sub.is_owner,
+                    )
+                )
+            return child
 
     async def renew_lease(
         self, job_id: str, worker_id: str, lease_seconds: float
@@ -587,7 +647,9 @@ class JobStateMachine:
         workflow = await session.get(CollectionWorkflow, changed_job.workflow_id)
         if workflow is None:
             return
-        if changed_job.type == JobType.INGEST_VIDEO.value:
+        if changed_job.type == JobType.RECORD_LIVE.value and not workflow.ingest_job_id:
+            workflow.ingest_job_id = changed_job.id
+        elif changed_job.type == JobType.INGEST_VIDEO.value:
             workflow.ingest_job_id = changed_job.id
         elif changed_job.type == JobType.ANALYZE.value:
             workflow.analysis_job_id = changed_job.id

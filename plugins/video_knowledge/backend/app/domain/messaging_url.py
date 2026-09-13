@@ -20,7 +20,7 @@ _XIAOHONGSHU_SHORT_HOSTS = {
 def validate_messaging_video_url(
     value: str, *, expected_platform: str | None = None
 ) -> str:
-    """Return a normalized allowlisted on-demand video URL."""
+    """Return an allowlisted video or Bilibili live-room URL."""
     if not value or any(
         character.isspace() or ord(character) < 32 for character in value
     ):
@@ -51,6 +51,9 @@ def validate_messaging_video_url(
 
     path = parsed.path
     query = parsed.query
+    if host == "live.bilibili.com":
+        path = path.rstrip("/")
+        query = ""
     if platform == "douyin" and host in _DOUYIN_HOSTS:
         modal_id = _douyin_modal_id(path, query)
         if modal_id is not None:
@@ -92,6 +95,8 @@ def is_b23_url(value: str) -> bool:
 
 
 def _platform_for_shape(host: str, path: str, query: str) -> str | None:
+    if host == "live.bilibili.com" and re.fullmatch(r"/[1-9][0-9]*/?", path):
+        return "bilibili"
     if host == _BILIBILI_SHORT_HOST and re.fullmatch(r"/[A-Za-z0-9]+/?", path):
         return "bilibili"
     if host in _BILIBILI_HOSTS and re.fullmatch(

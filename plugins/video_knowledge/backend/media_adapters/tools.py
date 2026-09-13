@@ -564,7 +564,12 @@ class StreamGetAdapter:
         self.proxy = proxy
 
     async def resolve(
-        self, url: str, platform: str, *, quality: str = "OD"
+        self,
+        url: str,
+        platform: str,
+        *,
+        quality: str = "OD",
+        cookies_file: Path | None = None,
     ) -> LiveStatus:
         class_name = self._PLATFORMS.get(platform)
         if class_name is None:
@@ -576,7 +581,23 @@ class StreamGetAdapter:
                 import streamget  # type: ignore[import-untyped]
 
                 client_type = getattr(streamget, class_name)
-                client = client_type(proxy_addr=self.proxy)
+                if cookies_file is not None:
+                    from http.cookiejar import MozillaCookieJar
+                    from urllib.request import Request
+
+                    def cookie_header() -> str | None:
+                        jar = MozillaCookieJar(str(cookies_file))
+                        jar.load(ignore_discard=True, ignore_expires=False)
+                        request = Request(url)
+                        jar.add_cookie_header(request)
+                        return request.get_header("Cookie")
+
+                    client = client_type(
+                        proxy_addr=self.proxy,
+                        cookies=await asyncio.to_thread(cookie_header),
+                    )
+                else:
+                    client = client_type(proxy_addr=self.proxy)
             page_data = await client.fetch_web_stream_data(url)
             value = await client.fetch_stream_url(page_data, video_quality=quality)
         except UnsupportedUrlError:

@@ -7,6 +7,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -131,6 +132,7 @@ class CollectionService:
 
     async def collect(self, url: str, origin: CollectionOrigin) -> dict:
         url = CollectVideoArguments(url=url).url
+        is_live = urlsplit(url).hostname == "live.bilibili.com"
         canonical, platform = normalize_url(url)
         inbound_key = self._inbound_key(origin)
         # Serialize replay, quotas, reuse, subscription, job/event and cache-hit
@@ -164,20 +166,27 @@ class CollectionService:
                     )
                 await self._enforce_storage_capacity(session)
                 await self._enforce_quotas(session, origin)
-                source = await session.scalar(
-                    select(Source).where(
-                        Source.type == "VIDEO", Source.canonical_url == canonical
+                # Each live request owns its recording chain, independent of
+                # desktop monitors and earlier broadcasts at the same room URL.
+                source = (
+                    None
+                    if is_live
+                    else await session.scalar(
+                        select(Source).where(
+                            Source.type == "VIDEO",
+                            Source.canonical_url == canonical,
+                        )
                     )
                 )
                 if source is None:
                     source = Source(
                         id=new_id("src"),
-                        type="VIDEO",
+                        type="LIVE" if is_live else "VIDEO",
                         platform=platform,
                         url=url,
                         canonical_url=canonical,
                         enabled=True,
-                        config_json="{}",
+                        config_json='{"messaging_capture":true}' if is_live else "{}",
                     )
                     session.add(source)
                     await session.flush()
@@ -197,7 +206,7 @@ class CollectionService:
                 )
                 reused = workflow is not None
                 cache_hit = False
-                if workflow is None:
+                if workflow is None and not is_live:
                     workflow = await session.scalar(
                         select(CollectionWorkflow)
                         .where(
@@ -209,7 +218,7 @@ class CollectionService:
                     )
                     reused = workflow is not None
                     cache_hit = workflow is not None
-                if workflow is None:
+                if workflow is None and not is_live:
                     ready_media_id = await session.scalar(
                         select(MediaItem.id)
                         .join(
@@ -247,13 +256,32 @@ class CollectionService:
                     session.add(workflow)
                     await session.flush()
                     job = await self.jobs.create(
-                        job_type=JobType.INGEST_VIDEO,
+                        job_type=JobType.RECORD_LIVE
+                        if is_live
+                        else JobType.INGEST_VIDEO,
+                        priority=50 if is_live else 100,
                         source_id=source.id,
                         workflow_id=workflow.id,
                         actor="messaging",
                         input_data={
                             "url": url,
                             "auto_analyze": True,
+                            **(
+                                {
+                                    "messaging_capture": True,
+                                    "recording_max_seconds": min(
+                                        3600,
+                                        self.settings.messaging_max_video_duration_seconds,
+                                    ),
+                                    "recording_remaining_seconds": (
+                                        self.settings.messaging_max_video_duration_seconds
+                                    ),
+                                    "recording_part": 1,
+                                    "quality_policy": "HD",
+                                }
+                                if is_live
+                                else {}
+                            ),
                             "max_height": self.settings.messaging_max_video_height,
                             "messaging_max_duration_seconds": (
                                 self.settings.messaging_max_video_duration_seconds
@@ -335,10 +363,12 @@ class CollectionService:
         )
         user_daily = sum(
             item.created_at.replace(tzinfo=None) >= midnight
+            and not item.inbound_idempotency_key.startswith("livepart_")
             for item in user_subscriptions
         )
         chat_daily = sum(
             item.created_at.replace(tzinfo=None) >= midnight
+            and not item.inbound_idempotency_key.startswith("livepart_")
             for item in chat_subscriptions
         )
 

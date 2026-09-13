@@ -133,6 +133,24 @@ class MessagingUrlGuard:
         await self._validate_dns(resolved)
         return resolved
 
+    async def validate_live_stream(self, value: str) -> None:
+        """Reject non-HTTP streams and local network destinations before recording."""
+        try:
+            parsed = urlsplit(value)
+            valid = (
+                parsed.scheme in {"http", "https"}
+                and parsed.hostname
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.port in {None, 80, 443}
+                and "\\" not in value
+            )
+        except ValueError:
+            valid = False
+        if not valid:
+            raise UnsafeUrlError("直播流地址无效")
+        await self._validate_dns(value)
+
     @staticmethod
     def _validate_shape(value: str, *, expected_platform: str | None = None) -> str:
         try:

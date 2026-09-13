@@ -98,6 +98,12 @@ async def _invoke(name, args):
                 "任务已排队。只回复受理信息和 workflow_id；不要等待或循环查询。"
                 "任务结束后会向当前飞书会话推送结果，也可稍后查询状态。"
             )
+            if parsed.url.startswith("https://live.bilibili.com/"):
+                result["recording_note"] = (
+                    "B站直播按每1小时分段录制，未满1小时下播也会保存。"
+                    f"单次总上限{settings.messaging_max_video_duration_seconds // 60}分钟，"
+                    "每段分别分析并回传；可发送“取消最新直播任务”停止后续录制。"
+                )
         elif name == "get_collection_status":
             parsed = CollectionStatusArguments.model_validate(args)
             result = await service.status(parsed.workflow_id, origin)
@@ -153,6 +159,8 @@ MESSAGING_TOOLS = tuple(
         (
             "collect_video",
             "Queue one Bilibili, Douyin, or Xiaohongshu video for collection and analysis. "
+            "Also accepts Bilibili live rooms at https://live.bilibili.com/{room_id}; "
+            "records hourly parts up to the configured total limit. Relay recording_note. "
             "Immediately acknowledge the returned workflow ID; never poll in a loop. "
             "Completion is pushed to the "
             "trusted originating Feishu conversation.",
@@ -188,14 +196,17 @@ MESSAGING_TOOLS = tuple(
 )
 
 
-_FAST_COLLECT_INTENTS = ("采集", "收集", "分析", "知识")
+_FAST_COLLECT_INTENTS = ("采集", "收集", "分析", "知识", "录制", "录播")
 _FAST_COLLECT_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
 
 def fast_collect_url(text: str) -> str | None:
     """Extract one explicit allowlisted video URL for Gateway fast admission."""
     value = str(text or "")
-    if not any(intent in value for intent in _FAST_COLLECT_INTENTS):
+    if (
+        not any(intent in value for intent in _FAST_COLLECT_INTENTS)
+        and "live.bilibili.com/" not in value
+    ):
         return None
     candidates = [
         match.group(0).rstrip(".,;:!?，。；：！？)]}）】")

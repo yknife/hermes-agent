@@ -4,15 +4,23 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import JobStatus, JobType
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Base,
+    CollectionWorkflow,
     Job,
     LiveSession,
     MediaAsset,
     MediaItem,
+    NotificationOutbox,
+    WorkflowSubscription,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.services.collection_service import (
+    CollectionOrigin,
+    CollectionService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.backend.app.services.live_service import LiveSourceService
 from plugins.video_knowledge.backend.app.services.media_service import MediaService
@@ -26,8 +34,14 @@ from plugins.video_knowledge.backend.media_adapters import (
     RecordingProgress,
     StreamGetAdapter,
 )
+from plugins.video_knowledge.backend.media_adapters.errors import (
+    MediaUnavailableError,
+    UnsafeUrlError,
+)
+from plugins.video_knowledge.backend.media_adapters.security import MessagingUrlGuard
 from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
 from plugins.video_knowledge.backend.worker.live_pipeline import LiveRecordingPipeline
+from plugins.video_knowledge.messaging_tools import fast_collect_url
 from sqlalchemy import select
 
 
@@ -98,6 +112,137 @@ class LiveInspector(FFprobeAdapter):
         assert await asyncio.to_thread(path.is_file)
         duration = 4.0 if path.name == "recording.mkv" else 2.0
         return MediaFileInfo(duration, "matroska", "h264", "video/x-matroska", {})
+
+
+class HourlyRecorder(ReconnectingRecorder):
+    async def record_live(self, stream_url, target, *, max_seconds, on_progress=None):
+        assert max_seconds == 3600
+        await super().record_live(
+            stream_url, target, max_seconds=max_seconds, on_progress=on_progress
+        )
+        return LiveRecordingResult(target, interrupted=False)
+
+
+class HourlyInspector(LiveInspector):
+    async def inspect(self, path):
+        value = await super().inspect(path)
+        return MediaFileInfo(3600, value.container, value.codec, value.mime_type, {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "offline,short,cancel",
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+)
+async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel):
+    (tmp_path / "storage").mkdir()
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'messaging-live.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        settings = Settings(
+            _env_file=None, storage_root=tmp_path, messaging_ingest_enabled=True
+        )
+        service = CollectionService(database, settings)
+        origin = CollectionOrigin("feishu", "user", "chat", "message", "session")
+        url = fast_collect_url("https://live.bilibili.com/123?from=share")
+        assert url == "https://live.bilibili.com/123"
+        accepted = await service.collect(url, origin)
+        assert (await service.collect(url, origin))["job_id"] == accepted["job_id"]
+        machine = JobStateMachine(database)
+        recorder = HourlyRecorder()
+        pipeline = LiveRecordingPipeline(
+            machine,
+            LiveSourceService(database),
+            MediaService(database, tmp_path / "storage"),
+            OfflineLiveResolver() if offline else FakeLiveResolver(),
+            recorder,
+            LiveInspector() if short else HourlyInspector(),
+            tmp_path / "storage",
+            MessagingUrlGuard(resolver=lambda *_: ["8.8.8.8"]),
+        )
+        for part in range(1, 4):
+            job = await machine.claim_next("worker", 60)
+            assert job.type == "RECORD_LIVE"
+            payload = json.loads(job.input_json)
+            assert payload["recording_part"] == part
+            assert payload["recording_max_seconds"] == 3600
+            assert payload["recording_remaining_seconds"] == 10800 - (part - 1) * 3600
+            heartbeat = LeaseHeartbeat(machine, job.id, "worker", 60)
+            if offline:
+                with pytest.raises(MediaUnavailableError, match="未开播"):
+                    await pipeline.run(job, "worker", heartbeat)
+                break
+            if cancel:
+                await machine.request_cancel(job.id)
+            await pipeline.run(job, "worker", heartbeat)
+            if short or cancel:
+                break
+        async with database.session() as session:
+            jobs = list((await session.scalars(select(Job))).all())
+            workflows = list((await session.scalars(select(CollectionWorkflow))).all())
+            subscriptions = list(
+                (await session.scalars(select(WorkflowSubscription))).all()
+            )
+            assert len(workflows) == (1 if offline or short or cancel else 3)
+            assert len(subscriptions) == len(workflows)
+            assert all(s.chat_id == "chat" and s.is_owner for s in subscriptions)
+            recording_jobs = [j for j in jobs if j.type == "RECORD_LIVE"]
+            assert len(recording_jobs) == len(workflows)
+            ingests = [j for j in jobs if j.type == "INGEST_VIDEO"]
+            assert len(ingests) == (0 if offline or cancel else len(workflows))
+            for ingest in ingests:
+                workflow = next(w for w in workflows if w.id == ingest.workflow_id)
+                assert workflow.ingest_job_id == ingest.id
+                assert workflow.status == "PENDING"
+                assert ingest.parent_job_id in [j.id for j in recording_jobs]
+            assert (
+                not list((await session.scalars(select(NotificationOutbox))).all())
+                if not cancel
+                else True
+            )
+        if not offline and not cancel:
+            child = await machine.claim_next("worker", 60)
+            assert child.type == "INGEST_VIDEO"
+            analysis = await machine.ensure_analysis_child(
+                child, input_data={}, media_id=child.media_id, actor="worker:worker"
+            )
+            await machine.complete(
+                child.id, "worker", result={"media_id": child.media_id}
+            )
+            async with database.session() as session:
+                workflow = await session.get(CollectionWorkflow, child.workflow_id)
+                assert workflow.analysis_job_id == analysis.id
+                assert workflow.status == "ANALYZING"
+            if short:
+                analysis_job = await machine.claim_next("worker", 60)
+                assert analysis_job.id == analysis.id
+                await machine.complete(analysis.id, "worker", result={})
+                async with database.session() as session:
+                    notifications = list(
+                        (await session.scalars(select(NotificationOutbox))).all()
+                    )
+                    assert len(notifications) == 1
+                    assert notifications[0].workflow_id == child.workflow_id
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_live_stream_guard_rejects_local_destinations():
+    guard = MessagingUrlGuard(resolver=lambda *_: ["127.0.0.1"])
+    for url in [
+        "https://cdn.example/live",
+        "file:///secret",
+        "https://user:secret@cdn.example/live",
+    ]:
+        with pytest.raises(UnsafeUrlError):
+            await guard.validate_live_stream(url)
 
 
 @pytest.mark.asyncio

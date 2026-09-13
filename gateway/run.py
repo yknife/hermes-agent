@@ -18686,11 +18686,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "视频知识任务未受理：运行结果缺少 workflow ID。"
         state = str(payload.get("status") or "PENDING")
         cache_note = "（已命中缓存）" if payload.get("cache_hit") else ""
+        recording_note = str(payload.get("recording_note") or "")
         return (
             f"视频知识任务已受理{cache_note}\n"
             f"Workflow ID：{workflow_id}\n"
             f"状态：{state}\n"
-            "完成或失败后会自动回复当前飞书会话。"
+            + (recording_note + "\n" if recording_note else "")
+            + "完成或失败后会自动回复当前飞书会话。"
         )
 
     async def _try_deliver_fast_video_knowledge(

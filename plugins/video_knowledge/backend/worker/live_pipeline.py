@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from plugins.video_knowledge.backend.app.domain.enums import JobStage, JobType
@@ -15,9 +16,16 @@ from plugins.video_knowledge.backend.media_adapters import (
     RecordingProgress,
     StreamGetAdapter,
 )
-from plugins.video_knowledge.backend.media_adapters.errors import MediaToolError
+from plugins.video_knowledge.backend.media_adapters.errors import (
+    MediaToolError,
+    MediaUnavailableError,
+)
 from plugins.video_knowledge.backend.media_adapters.models import LiveStatus
+from plugins.video_knowledge.backend.media_adapters.security import MessagingUrlGuard
 from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
+from plugins.video_knowledge.backend.worker.pipeline import (
+    enforce_messaging_storage_limit,
+)
 
 
 class LiveRecordingPipeline:
@@ -30,6 +38,7 @@ class LiveRecordingPipeline:
         recorder: FFmpegAdapter,
         inspector: FFprobeAdapter,
         storage_root: Path,
+        messaging_url_guard: MessagingUrlGuard | None = None,
     ) -> None:
         self.state_machine = state_machine
         self.live_service = live_service
@@ -38,12 +47,16 @@ class LiveRecordingPipeline:
         self.recorder = recorder
         self.inspector = inspector
         self.storage_root = storage_root
+        self.messaging_url_guard = messaging_url_guard or MessagingUrlGuard()
 
     async def run(self, job: Job, worker_id: str, heartbeat: LeaseHeartbeat) -> None:
         if job.source_id is None:
             raise ValueError("直播任务缺少 source_id")
         payload = json.loads(job.input_json)
         source = await self.media_service.get_source(job.source_id)
+        if payload.get("messaging_capture"):
+            await self.messaging_url_guard.validate_input(source.url)
+            await enforce_messaging_storage_limit(self.storage_root, payload)
         recovery = await self.live_service.recoverable_session(source.id)
         temp_dir = self._session_temp_dir(recovery, job.id)
         segments = await self._load_segments(temp_dir)
@@ -71,8 +84,22 @@ class LiveRecordingPipeline:
             message="正在检测直播状态",
         )
         status = await self.resolver.resolve(
-            source.url, source.platform, quality=quality
+            source.url,
+            source.platform,
+            quality=quality,
+            **(
+                {"cookies_file": Path(str(payload["cookies_file"]))}
+                if payload.get("cookies_file")
+                else {}
+            ),
         )
+        if payload.get("messaging_capture") and status.is_live:
+            part = int(payload.get("recording_part", 1))
+            status = replace(
+                status,
+                session_key=f"{status.session_key}:part{part}",
+                title=f"{status.title or 'B站直播'} · 第{part}段",
+            )
         await self.live_service.mark_checked(source.id, poll_interval)
 
         if not status.is_live:
@@ -95,6 +122,8 @@ class LiveRecordingPipeline:
                     status="FAILED",
                     error_message="直播已经结束，但没有找到可恢复的录制分片",
                 )
+            if payload.get("messaging_capture"):
+                raise MediaUnavailableError("B站直播间当前未开播；开播后请重试")
             await self.state_machine.wait_for_live(
                 job.id,
                 worker_id,
@@ -131,6 +160,10 @@ class LiveRecordingPipeline:
                 source.id, job.id, status
             )
             if live_session is None:
+                if payload.get("messaging_capture"):
+                    raise MediaUnavailableError(
+                        "本场直播已采集；请在下一场开播后重新提交"
+                    )
                 await self.state_machine.wait_for_live(
                     job.id,
                     worker_id,
@@ -156,7 +189,14 @@ class LiveRecordingPipeline:
                 if offset > 0:
                     await asyncio.sleep(reconnect_delay)
                     refreshed = await self.resolver.resolve(
-                        source.url, source.platform, quality=quality
+                        source.url,
+                        source.platform,
+                        quality=quality,
+                        **(
+                            {"cookies_file": Path(str(payload["cookies_file"]))}
+                            if payload.get("cookies_file")
+                            else {}
+                        ),
                     )
                     if not refreshed.is_live or not refreshed.streams:
                         break
@@ -187,6 +227,11 @@ class LiveRecordingPipeline:
                     )
 
                 try:
+                    if payload.get("messaging_capture"):
+                        await self.messaging_url_guard.validate_live_stream(stream.url)
+                        await enforce_messaging_storage_limit(
+                            self.storage_root, payload
+                        )
                     record_task = asyncio.create_task(
                         self.recorder.record_live(
                             stream.url,
@@ -310,6 +355,23 @@ class LiveRecordingPipeline:
         await self.live_service.finish_session(
             live_session.id, media_id=media.id, status="READY"
         )
+        if payload.get("messaging_capture"):
+            segment_limit = int(payload.get("recording_max_seconds", 3600))
+            remaining = (
+                int(payload.get("recording_remaining_seconds", segment_limit))
+                - segment_limit
+            )
+            if remaining > 0 and final_info.duration_seconds >= segment_limit - 2:
+                await self.state_machine.queue_live_continuation(
+                    job,
+                    worker_id,
+                    {
+                        **payload,
+                        "recording_part": int(payload.get("recording_part", 1)) + 1,
+                        "recording_remaining_seconds": remaining,
+                        "recording_max_seconds": min(3600, remaining),
+                    },
+                )
         postprocess = await self.state_machine.create(
             job_type=JobType.INGEST_VIDEO,
             input_data={
@@ -331,6 +393,8 @@ class LiveRecordingPipeline:
             },
             source_id=live_session.source_id,
             media_id=media.id,
+            workflow_id=job.workflow_id,
+            parent_job_id=job.id if job.workflow_id else None,
             actor=f"worker:{worker_id}",
         )
         await self.state_machine.complete(
@@ -343,9 +407,10 @@ class LiveRecordingPipeline:
                 "segment_count": len(segments),
             },
         )
-        await self.live_service.queue_monitor(
-            live_session.source_id, actor=f"worker:{worker_id}"
-        )
+        if not payload.get("messaging_capture"):
+            await self.live_service.queue_monitor(
+                live_session.source_id, actor=f"worker:{worker_id}"
+            )
 
     def _session_temp_dir(
         self, recovery: LiveSession | None, fallback_job_id: str
