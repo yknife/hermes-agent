@@ -64,6 +64,24 @@ class MessagingUrlGuard:
             for _hop in range(self.max_redirects):
                 try:
                     response = await client.head(current)
+                    if response.status_code in {200, 405}:
+                        # Some official share hosts render or reject HEAD while GET
+                        # still returns the redirect. Stream GET so no response body
+                        # is buffered before its Location header is validated.
+                        async with client.stream("GET", current) as get_response:
+                            response = get_response
+                            if response.status_code in {301, 302, 303, 307, 308}:
+                                location = response.headers.get("location", "")
+                                if not location:
+                                    raise UnsafeUrlError("短链重定向缺少目标地址")
+                                current = self._validate_shape(
+                                    urljoin(current, location),
+                                    expected_platform=expected_platform,
+                                )
+                                await self._validate_dns(current)
+                                if not is_messaging_short_url(current):
+                                    return current
+                                continue
                 except (httpx.TimeoutException, httpx.NetworkError) as exc:
                     raise NetworkTimeoutError("连接视频平台超时") from exc
                 if response.status_code in {301, 302, 303, 307, 308}:
@@ -93,8 +111,13 @@ class MessagingUrlGuard:
 
     async def validate_probe(self, probe: MediaProbe, *, expected_platform: str) -> str:
         platform = str(probe.platform or "").casefold()
-        platform_matches = (expected_platform == "bilibili" and "bili" in platform) or (
-            expected_platform == "douyin" and "douyin" in platform
+        platform_matches = (
+            (expected_platform == "bilibili" and "bili" in platform)
+            or (expected_platform == "douyin" and "douyin" in platform)
+            or (
+                expected_platform == "xiaohongshu"
+                and "xiaohongshu" in platform.replace("_", "")
+            )
         )
         if not platform_matches:
             raise UnsafeUrlError("媒体探测结果与请求的视频平台不一致")

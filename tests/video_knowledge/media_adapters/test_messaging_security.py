@@ -150,3 +150,69 @@ async def test_short_link_cannot_redirect_between_allowlisted_platforms() -> Non
     )
     with pytest.raises(UnsafeUrlError):
         await guard.validate_input("https://v.douyin.com/iRNBho6u/")
+
+
+@pytest.mark.asyncio
+async def test_xiaohongshu_short_link_and_probe_preserve_access_token() -> None:
+    direct = (
+        "https://www.xiaohongshu.com/discovery/item/674051740000000007027a15"
+        "?xsec_token=required-token%3D"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "HEAD"
+        return httpx.Response(302, headers={"location": direct})
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    resolved = await guard.validate_input("https://xhslink.com/a/AbCd_123-xy/")
+    assert resolved == direct
+    assert (
+        await guard.validate_probe(
+            MediaProbe(
+                external_id="674051740000000007027a15",
+                title="fixture",
+                webpage_url=direct,
+                platform="XiaoHongShu",
+            ),
+            expected_platform="xiaohongshu",
+        )
+        == direct
+    )
+
+
+@pytest.mark.asyncio
+async def test_xiaohongshu_short_link_falls_back_to_streaming_get() -> None:
+    direct = "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9"
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "HEAD":
+            return httpx.Response(405)
+        return httpx.Response(302, headers={"location": direct})
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    assert await guard.validate_input("https://xhslink.com/a/Share123") == direct
+    assert methods == ["HEAD", "GET"]
+
+
+@pytest.mark.asyncio
+async def test_xiaohongshu_short_link_cannot_redirect_to_douyin() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"location": "https://www.douyin.com/video/7672313492216548651"},
+        )
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    with pytest.raises(UnsafeUrlError):
+        await guard.validate_input("https://xhslink.com/a/Share123")

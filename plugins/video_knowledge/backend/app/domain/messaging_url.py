@@ -8,12 +8,14 @@ _BILIBILI_SHORT_HOST = "b23.tv"
 _DOUYIN_HOSTS = {"douyin.com", "www.douyin.com"}
 _DOUYIN_SHARE_HOSTS = {"iesdouyin.com", "www.iesdouyin.com"}
 _DOUYIN_SHORT_HOST = "v.douyin.com"
+_XIAOHONGSHU_HOST = "www.xiaohongshu.com"
+_XIAOHONGSHU_SHORT_HOSTS = {"xhslink.com", "www.xhslink.com"}
 
 
 def validate_messaging_video_url(
     value: str, *, expected_platform: str | None = None
 ) -> str:
-    """Return a normalized Bilibili or Douyin video URL, or raise ``ValueError``."""
+    """Return a normalized allowlisted on-demand video URL."""
     if not value or any(
         character.isspace() or ord(character) < 32 for character in value
     ):
@@ -36,7 +38,8 @@ def validate_messaging_video_url(
     platform = _platform_for_shape(host, parsed.path, parsed.query)
     if platform is None:
         raise ValueError(
-            "Only Bilibili and Douyin on-demand video URLs or approved short links are allowed"
+            "Only Bilibili, Douyin, and Xiaohongshu on-demand video URLs or "
+            "approved short links are allowed"
         )
     if expected_platform is not None and platform != expected_platform:
         raise ValueError("Video URL redirected to a different platform")
@@ -72,7 +75,11 @@ def messaging_video_platform(value: str) -> str:
 
 def is_messaging_short_url(value: str) -> bool:
     host = (urlsplit(value).hostname or "").lower().rstrip(".")
-    return host in {_BILIBILI_SHORT_HOST, _DOUYIN_SHORT_HOST}
+    return host in {
+        _BILIBILI_SHORT_HOST,
+        _DOUYIN_SHORT_HOST,
+        *_XIAOHONGSHU_SHORT_HOSTS,
+    }
 
 
 def is_b23_url(value: str) -> bool:
@@ -95,6 +102,14 @@ def _platform_for_shape(host: str, path: str, query: str) -> str | None:
         return "douyin"
     if host in _DOUYIN_SHARE_HOSTS and re.fullmatch(r"/share/video/[0-9]+/?", path):
         return "douyin"
+    if host in _XIAOHONGSHU_SHORT_HOSTS and re.fullmatch(
+        r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?/?", path
+    ):
+        return "xiaohongshu"
+    if host == _XIAOHONGSHU_HOST and re.fullmatch(
+        r"/(?:explore|discovery/item)/[\da-f]+/?", path
+    ):
+        return "xiaohongshu"
     return None
 
 

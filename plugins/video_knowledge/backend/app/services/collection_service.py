@@ -527,6 +527,7 @@ class CollectionService:
             platform_label = {
                 "bilibili": "B站",
                 "douyin": "抖音",
+                "xiaohongshu": "小红书",
             }.get(platform, platform or "视频平台")
             retry_state = (
                 (

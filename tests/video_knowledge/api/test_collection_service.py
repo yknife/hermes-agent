@@ -96,6 +96,10 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
     [
         ("bilibili", "https://b23.tv/Cookie123"),
         ("douyin", "https://www.douyin.com/video/7672313492216548651"),
+        (
+            "xiaohongshu",
+            "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
+        ),
     ],
 )
 async def test_messaging_collection_uses_platform_cookie_setting(
@@ -266,6 +270,38 @@ async def test_retry_refreshes_douyin_cookies_and_returns_platform_guidance(tmp_
             assert json.loads(refreshed_job.input_json)["cookies_file"] == str(
                 cookies.resolve()
             )
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retry_refreshes_xiaohongshu_cookies_and_labels_platform(tmp_path):
+    database, service = await _service(tmp_path / "app.db")
+    url = "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9"
+    try:
+        accepted = await service.collect(url, _origin())
+        machine = JobStateMachine(database)
+        claimed = await machine.claim_next("worker-a", 60)
+        assert claimed is not None
+        await machine.fail(
+            claimed.id,
+            "worker-a",
+            error_code="AUTH_REQUIRED",
+            error_message="authentication required",
+        )
+
+        cookies = tmp_path / "xiaohongshu-cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        await CookieSettingsService(database, service.settings).update(
+            "xiaohongshu", str(cookies)
+        )
+
+        retried = await service.retry(accepted["workflow_id"], _origin())
+        assert retried["retry_requested"] is True
+        assert retried["platform"] == "xiaohongshu"
+        assert retried["cookies_refreshed"] is True
+        assert "小红书" in retried["message"]
+        assert "B站" not in retried["message"]
     finally:
         await database.dispose()
 

@@ -152,7 +152,7 @@ MESSAGING_TOOLS = tuple(
     for name, description, contract, handler in (
         (
             "collect_video",
-            "Queue one Bilibili or Douyin video for collection and analysis. "
+            "Queue one Bilibili, Douyin, or Xiaohongshu video for collection and analysis. "
             "Immediately acknowledge the returned workflow ID; never poll in a loop. "
             "Completion is pushed to the "
             "trusted originating Feishu conversation.",
