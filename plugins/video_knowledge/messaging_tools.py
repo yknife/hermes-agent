@@ -179,7 +179,8 @@ MESSAGING_TOOLS = tuple(
             "retry_collection",
             "Retry your own failed collection workflow. Omit workflow_id for phrases such "
             "as '重试刚才的视频任务'; the tool then resolves the latest owned workflow in "
-            "this trusted conversation. Repeated calls are idempotent while it is queued.",
+            "this trusted conversation. Repeated calls are idempotent while it is queued. "
+            "Relay the returned message and platform; do not infer a platform or failure cause.",
             RetryCollectionArguments,
             retry_collection,
         ),

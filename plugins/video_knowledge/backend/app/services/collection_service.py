@@ -429,6 +429,7 @@ class CollectionService:
     async def status(self, workflow_id: str | None, origin: CollectionOrigin) -> dict:
         async with self.database.session() as session:
             workflow = await self._resolve_workflow(session, workflow_id, origin)
+            source = await session.get(Source, workflow.source_id)
             job_id = self._job_id(workflow)
             job = await session.get(Job, job_id) if job_id else None
             stage = job.stage if job else "DONE"
@@ -439,6 +440,7 @@ class CollectionService:
             )
             return {
                 "workflow_id": workflow.id,
+                "platform": source.platform if source is not None else None,
                 "job_id": job.id if job else None,
                 "job_type": job.type if job else None,
                 "status": workflow.status,
@@ -483,18 +485,60 @@ class CollectionService:
             )
             job_id = self._job_id(workflow)
             failed = workflow.status == WorkflowStatus.FAILED.value
+            previous_error_code = workflow.terminal_reason
+            source = await session.get(Source, workflow.source_id)
+            job = await session.get(Job, job_id) if job_id else None
+            platform = source.platform if source is not None else None
+            refresh_cookie_config = bool(
+                job is not None and job.type == JobType.INGEST_VIDEO.value
+            )
+            cookies_file = (
+                await CookieSettingsService(self.database, self.settings).resolve(
+                    platform, session=session
+                )
+                if platform is not None and job is not None and refresh_cookie_config
+                else None
+            )
         if not failed or job_id is None:
             current = await self.status(workflow.id, origin)
             current["retry_requested"] = False
             current["message"] = "当前任务不是可重试的失败状态。"
             return current
         try:
-            await self.jobs.retry(job_id, actor="messaging")
+            await self.jobs.retry(
+                job_id,
+                actor="messaging",
+                input_updates=(
+                    {"cookies_file": str(cookies_file) if cookies_file else None}
+                    if refresh_cookie_config
+                    else None
+                ),
+            )
             requested = True
         except JobInvalidTransitionError:
             requested = False
         current = await self.status(workflow.id, origin)
         current["retry_requested"] = requested
+        current["previous_error_code"] = previous_error_code
+        current["cookies_refreshed"] = (
+            bool(cookies_file) if refresh_cookie_config else None
+        )
         if requested:
-            current["message"] = "重试已排队；任务结束后会向当前飞书会话推送新结果。"
+            platform_label = {
+                "bilibili": "B站",
+                "douyin": "抖音",
+            }.get(platform, platform or "视频平台")
+            retry_state = (
+                (
+                    "已刷新本次任务的 Cookies 配置"
+                    if cookies_file
+                    else "本次任务没有可用的 Cookies 配置"
+                )
+                if refresh_cookie_config
+                else "将复用已采集媒体重新分析"
+            )
+            current["message"] = (
+                f"{platform_label}任务已重新排队；{retry_state}。"
+                "任务结束后会向当前飞书会话推送新结果。"
+            )
         return current

@@ -1,4 +1,5 @@
 import json
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from typing import Any, cast
 
@@ -388,7 +389,13 @@ class JobStateMachine:
             job.next_run_at = utc_now()
             return job
 
-    async def retry(self, job_id: str, actor: str = "api") -> Job:
+    async def retry(
+        self,
+        job_id: str,
+        actor: str = "api",
+        *,
+        input_updates: Mapping[str, Any] | None = None,
+    ) -> Job:
         async with self.database.session() as session, session.begin():
             job = await self._get_job(session, job_id)
             current = JobStatus(job.status)
@@ -411,6 +418,17 @@ class JobStateMachine:
                 ):
                     workflow.terminal_generation += 1
             old_status = current
+            if input_updates:
+                try:
+                    input_data = json.loads(job.input_json or "{}")
+                except (TypeError, ValueError):
+                    input_data = {}
+                if not isinstance(input_data, dict):
+                    input_data = {}
+                input_data.update(input_updates)
+                job.input_json = json.dumps(
+                    input_data, ensure_ascii=False, separators=(",", ":")
+                )
             job.status = JobStatus.PENDING.value
             job.stage = JobStage.CREATED.value
             job.progress = 0.0

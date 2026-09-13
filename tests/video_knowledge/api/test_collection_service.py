@@ -196,7 +196,7 @@ async def test_failed_owner_can_retry_latest_once_and_subscriber_cannot(tmp_path
         assert retried["workflow_id"] == accepted["workflow_id"]
         assert retried["status"] == WorkflowStatus.PENDING.value
         assert retried["retry_requested"] is True
-        assert "重试已排队" in retried["message"]
+        assert "重新排队" in retried["message"]
 
         duplicate = await service.retry(accepted["workflow_id"], _origin())
         assert duplicate["retry_requested"] is False
@@ -222,6 +222,50 @@ async def test_failed_owner_can_retry_latest_once_and_subscriber_cannot(tmp_path
             assert workflow.terminal_generation == 1
             assert len(outbox) == 4
             assert len({item.idempotency_key for item in outbox}) == 4
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_retry_refreshes_douyin_cookies_and_returns_platform_guidance(tmp_path):
+    database, service = await _service(tmp_path / "app.db")
+    url = "https://v.douyin.com/oPtMcpSs3-c/"
+    try:
+        accepted = await service.collect(url, _origin())
+        machine = JobStateMachine(database)
+        claimed = await machine.claim_next("worker-a", 60)
+        assert claimed is not None
+        await machine.fail(
+            claimed.id,
+            "worker-a",
+            error_code="AUTH_REQUIRED",
+            error_message="authentication required",
+        )
+        async with database.session() as session:
+            failed_job = await session.get(Job, claimed.id)
+            assert failed_job is not None
+            assert "cookies_file" not in json.loads(failed_job.input_json)
+
+        cookies = tmp_path / "douyin-cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        await CookieSettingsService(database, service.settings).update(
+            "douyin", str(cookies)
+        )
+
+        retried = await service.retry(accepted["workflow_id"], _origin())
+        assert retried["retry_requested"] is True
+        assert retried["platform"] == "douyin"
+        assert retried["previous_error_code"] == "AUTH_REQUIRED"
+        assert retried["cookies_refreshed"] is True
+        assert "抖音" in retried["message"]
+        assert "B站" not in retried["message"]
+
+        async with database.session() as session:
+            refreshed_job = await session.get(Job, claimed.id)
+            assert refreshed_job is not None
+            assert json.loads(refreshed_job.input_json)["cookies_file"] == str(
+                cookies.resolve()
+            )
     finally:
         await database.dispose()
 
