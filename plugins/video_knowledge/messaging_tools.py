@@ -101,8 +101,12 @@ async def _invoke(name, args):
             if parsed.url.startswith("https://live.bilibili.com/"):
                 result["recording_note"] = (
                     "B站直播按每1小时分段录制，未满1小时下播也会保存。"
-                    f"单次总上限{settings.messaging_max_video_duration_seconds // 60}分钟，"
-                    "每段分别分析并回传；可发送“取消最新直播任务”停止后续录制。"
+                    + (
+                        f"单次总上限{settings.messaging_max_video_duration_seconds // 60}分钟，"
+                        if settings.messaging_max_video_duration_seconds
+                        else "不限制总录制时长，"
+                    )
+                    + "每段分别分析并回传；可发送“取消最新直播任务”停止后续录制。"
                 )
         elif name == "get_collection_status":
             parsed = CollectionStatusArguments.model_validate(args)

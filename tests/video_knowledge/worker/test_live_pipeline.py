@@ -146,7 +146,10 @@ async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel):
         await connection.run_sync(Base.metadata.create_all)
     try:
         settings = Settings(
-            _env_file=None, storage_root=tmp_path, messaging_ingest_enabled=True
+            _env_file=None,
+            storage_root=tmp_path,
+            messaging_ingest_enabled=True,
+            messaging_max_video_duration_seconds=10800,
         )
         service = CollectionService(database, settings)
         origin = CollectionOrigin("feishu", "user", "chat", "message", "session")
@@ -243,6 +246,54 @@ async def test_live_stream_guard_rejects_local_destinations():
     ]:
         with pytest.raises(UnsafeUrlError):
             await guard.validate_live_stream(url)
+
+
+@pytest.mark.asyncio
+async def test_unlimited_live_continues_past_three_hours_and_can_cancel(tmp_path):
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'unlimited.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        settings = Settings(
+            _env_file=None, storage_root=tmp_path, messaging_ingest_enabled=True
+        )
+        service = CollectionService(database, settings)
+        origin = CollectionOrigin("feishu", "user", "chat", "message", "session")
+        await service.collect("https://live.bilibili.com/123", origin)
+        machine = JobStateMachine(database)
+        pipeline = LiveRecordingPipeline(
+            machine,
+            LiveSourceService(database),
+            MediaService(database, tmp_path),
+            FakeLiveResolver(),
+            HourlyRecorder(),
+            HourlyInspector(),
+            tmp_path,
+            MessagingUrlGuard(resolver=lambda *_: ["8.8.8.8"]),
+        )
+        for part in range(1, 5):
+            job = await machine.claim_next("worker", 60)
+            assert job.type == "RECORD_LIVE"
+            payload = json.loads(job.input_json)
+            assert payload["recording_remaining_seconds"] == 0
+            assert payload["recording_max_seconds"] == 3600
+            assert payload["recording_part"] == part
+            await pipeline.run(
+                job, "worker", LeaseHeartbeat(machine, job.id, "worker", 60)
+            )
+        latest = await service.status(None, origin)
+        await service.cancel(latest["workflow_id"], origin)
+        async with database.session() as session:
+            recordings = list(
+                (
+                    await session.scalars(select(Job).where(Job.type == "RECORD_LIVE"))
+                ).all()
+            )
+            assert len(recordings) == 5
+            assert sum(j.status == "SUCCEEDED" for j in recordings) == 4
+            assert sum(j.status == "CANCELLED" for j in recordings) == 1
+    finally:
+        await database.dispose()
 
 
 @pytest.mark.asyncio

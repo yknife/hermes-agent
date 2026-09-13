@@ -52,7 +52,8 @@ class Settings(BaseSettings):
     messaging_max_active_per_chat: int = Field(default=3, ge=1, le=50)
     messaging_max_submissions_per_user_per_day: int = Field(default=10, ge=1, le=1000)
     messaging_max_submissions_per_chat_per_day: int = Field(default=30, ge=1, le=5000)
-    messaging_max_video_duration_seconds: int = Field(default=10800, ge=1, le=86400)
+    # Zero disables duration limits; live recordings still use hourly parts.
+    messaging_max_video_duration_seconds: int = Field(default=0, ge=0, le=86400)
     messaging_max_video_height: Literal[360, 480, 720, 1080] = 720
     messaging_min_free_bytes: int = Field(
         default=2 * 1024 * 1024 * 1024,

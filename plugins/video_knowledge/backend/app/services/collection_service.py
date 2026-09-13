@@ -271,7 +271,8 @@ class CollectionService:
                                     "messaging_capture": True,
                                     "recording_max_seconds": min(
                                         3600,
-                                        self.settings.messaging_max_video_duration_seconds,
+                                        self.settings.messaging_max_video_duration_seconds
+                                        or 3600,
                                     ),
                                     "recording_remaining_seconds": (
                                         self.settings.messaging_max_video_duration_seconds

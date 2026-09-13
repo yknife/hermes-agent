@@ -50,7 +50,7 @@ def test_messaging_policy_loads_from_operator_environment(monkeypatch):
         {"messaging_max_submissions_per_chat_per_day": -1},
         {"messaging_min_free_bytes": 1},
         {"messaging_personal_data_retention_days": 0},
-        {"messaging_max_video_duration_seconds": 0},
+        {"messaging_max_video_duration_seconds": -1},
         {"messaging_max_video_height": 2160},
         {"messaging_allowed_platforms": ["telegram"]},
     ],

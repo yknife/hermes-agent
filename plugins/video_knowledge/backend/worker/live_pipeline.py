@@ -357,11 +357,12 @@ class LiveRecordingPipeline:
         )
         if payload.get("messaging_capture"):
             segment_limit = int(payload.get("recording_max_seconds", 3600))
-            remaining = (
-                int(payload.get("recording_remaining_seconds", segment_limit))
-                - segment_limit
-            )
-            if remaining > 0 and final_info.duration_seconds >= segment_limit - 2:
+            budget = int(payload.get("recording_remaining_seconds", segment_limit))
+            unlimited = budget == 0
+            remaining = 0 if unlimited else budget - segment_limit
+            if (
+                unlimited or remaining > 0
+            ) and final_info.duration_seconds >= segment_limit - 2:
                 await self.state_machine.queue_live_continuation(
                     job,
                     worker_id,
@@ -369,7 +370,9 @@ class LiveRecordingPipeline:
                         **payload,
                         "recording_part": int(payload.get("recording_part", 1)) + 1,
                         "recording_remaining_seconds": remaining,
-                        "recording_max_seconds": min(3600, remaining),
+                        "recording_max_seconds": 3600
+                        if unlimited
+                        else min(3600, remaining),
                     },
                 )
         postprocess = await self.state_machine.create(

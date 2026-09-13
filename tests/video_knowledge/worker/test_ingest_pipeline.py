@@ -52,6 +52,20 @@ from plugins.video_knowledge.backend.worker.pipeline import (
 from sqlalchemy import select
 
 
+@pytest.mark.parametrize("duration", [None, 0, 10801, 360000])
+def test_disabled_duration_limit_accepts_long_or_unknown_video(duration):
+    enforce_messaging_duration_limit(
+        MediaProbe(
+            external_id="long",
+            title="long",
+            webpage_url="https://example.test",
+            platform="fixture",
+            duration_seconds=duration,
+        ),
+        {"messaging_max_duration_seconds": 0},
+    )
+
+
 def test_messaging_duration_limit_requires_known_bounded_duration() -> None:
     payload = {"messaging_max_duration_seconds": 60}
     enforce_messaging_duration_limit(

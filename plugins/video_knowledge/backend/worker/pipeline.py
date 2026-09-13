@@ -63,6 +63,8 @@ def enforce_messaging_duration_limit(probe: MediaProbe, payload: dict) -> None:
     raw_limit = payload.get("messaging_max_duration_seconds")
     if raw_limit is None:
         return
+    if raw_limit == 0:
+        return
     try:
         limit = int(raw_limit)
     except (TypeError, ValueError):
