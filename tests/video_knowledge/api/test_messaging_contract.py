@@ -79,6 +79,7 @@ def test_invalid_messaging_policy_fails_closed(values):
         ),
         "https://xhslink.com/a/AbCd_123-xy/",
         "http://www.xhslink.com/m/Share123",
+        "https://xhslink.cn/o/7PdV8Tkf8gw",
     ],
 )
 def test_collect_contract_accepts_only_video_link_shape(url):
@@ -123,6 +124,9 @@ def test_collect_contract_canonicalizes_douyin_modal_video_url():
         "https://xhslink.com/",
         "https://xhslink.com/a/Share123/extra",
         "https://evilxhslink.com/a/Share123",
+        "https://xhslink.cn/",
+        "https://xhslink.cn/o/Share123/extra",
+        "https://xhslink.cn.evil.test/o/Share123",
         "https://[invalid/",
     ],
 )
@@ -185,3 +189,8 @@ def test_fast_collect_url_requires_one_explicit_intent_and_allowed_url():
     assert fast_collect_url(f"采集并分析这个抖音视频：{douyin}") == douyin
     xiaohongshu = "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9"
     assert fast_collect_url(f"采集并分析这个小红书视频：{xiaohongshu}") == xiaohongshu
+    short_xiaohongshu = "https://xhslink.cn/o/7PdV8Tkf8gw"
+    assert (
+        fast_collect_url(f"采集并分析小红书视频：{short_xiaohongshu}")
+        == short_xiaohongshu
+    )

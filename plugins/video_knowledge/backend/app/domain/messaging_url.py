@@ -9,7 +9,12 @@ _DOUYIN_HOSTS = {"douyin.com", "www.douyin.com"}
 _DOUYIN_SHARE_HOSTS = {"iesdouyin.com", "www.iesdouyin.com"}
 _DOUYIN_SHORT_HOST = "v.douyin.com"
 _XIAOHONGSHU_HOST = "www.xiaohongshu.com"
-_XIAOHONGSHU_SHORT_HOSTS = {"xhslink.com", "www.xhslink.com"}
+_XIAOHONGSHU_SHORT_HOSTS = {
+    "xhslink.cn",
+    "www.xhslink.cn",
+    "xhslink.com",
+    "www.xhslink.com",
+}
 
 
 def validate_messaging_video_url(

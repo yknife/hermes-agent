@@ -203,6 +203,27 @@ async def test_xiaohongshu_short_link_falls_back_to_streaming_get() -> None:
 
 
 @pytest.mark.asyncio
+async def test_xiaohongshu_cn_share_link_resolves_without_agent_browser() -> None:
+    direct = "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9"
+
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        assert request.url.host == "xhslink.cn"
+        if request.method == "HEAD":
+            return httpx.Response(404)
+        return httpx.Response(302, headers={"location": direct})
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    assert await guard.validate_input("https://xhslink.cn/o/7PdV8Tkf8gw") == direct
+    assert methods == ["HEAD", "GET"]
+
+
+@pytest.mark.asyncio
 async def test_xiaohongshu_short_link_cannot_redirect_to_douyin() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

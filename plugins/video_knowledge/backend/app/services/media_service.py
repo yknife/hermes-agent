@@ -160,6 +160,7 @@ def _platform_for_host(host: str) -> str:
         "douyin.com": "douyin",
         "iesdouyin.com": "douyin",
         "xiaohongshu.com": "xiaohongshu",
+        "xhslink.cn": "xiaohongshu",
         "xhslink.com": "xiaohongshu",
         "douyu.com": "douyu",
         "huya.com": "huya",

@@ -64,7 +64,11 @@ class MessagingUrlGuard:
             for _hop in range(self.max_redirects):
                 try:
                     response = await client.head(current)
-                    if response.status_code in {200, 405}:
+                    retry_with_get = response.status_code in {200, 405} or (
+                        expected_platform == "xiaohongshu"
+                        and response.status_code in {404, 410}
+                    )
+                    if retry_with_get:
                         # Some official share hosts render or reject HEAD while GET
                         # still returns the redirect. Stream GET so no response body
                         # is buffered before its Location header is validated.

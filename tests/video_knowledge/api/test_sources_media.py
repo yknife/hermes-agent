@@ -98,6 +98,7 @@ def test_normalize_url_recognizes_douyin_share_hosts(url: str) -> None:
     "url",
     [
         "https://www.xiaohongshu.com/explore/123",
+        "https://xhslink.cn/o/Share123",
         "https://xhslink.com/a/short-link",
     ],
 )
