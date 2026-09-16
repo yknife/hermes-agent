@@ -139,7 +139,11 @@ class HourlyInspector(LiveInspector):
         (False, False, True),
     ],
 )
-async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel):
+@pytest.mark.parametrize(
+    "room_url",
+    ["https://live.bilibili.com/123", "https://www.xiaohongshu.com/livestream/123"],
+)
+async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel, room_url):
     (tmp_path / "storage").mkdir()
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'messaging-live.db'}")
     async with database.engine.begin() as connection:
@@ -153,8 +157,8 @@ async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel):
         )
         service = CollectionService(database, settings)
         origin = CollectionOrigin("feishu", "user", "chat", "message", "session")
-        url = fast_collect_url("https://live.bilibili.com/123?from=share")
-        assert url == "https://live.bilibili.com/123"
+        url = fast_collect_url(room_url)
+        assert url == room_url
         accepted = await service.collect(url, origin)
         assert (await service.collect(url, origin))["job_id"] == accepted["job_id"]
         machine = JobStateMachine(database)

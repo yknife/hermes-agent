@@ -546,6 +546,7 @@ class StreamGetAdapter:
     """Resolve live streams without exposing signed URLs outside the adapter layer."""
 
     _PLATFORMS = {
+        "xiaohongshu": "RedNoteLiveStream",
         "bilibili": "BilibiliLiveStream",
         "douyin": "DouyinLiveStream",
         "douyu": "DouyuLiveStream",
@@ -587,7 +588,12 @@ class StreamGetAdapter:
 
                     def cookie_header() -> str | None:
                         jar = MozillaCookieJar(str(cookies_file))
-                        jar.load(ignore_discard=True, ignore_expires=False)
+                        jar.load(ignore_discard=True, ignore_expires=True)
+                        # Browser exports use zero for session-cookie expiry.
+                        for cookie in jar:
+                            if cookie.expires == 0:
+                                cookie.expires = None
+                        jar.clear_expired_cookies()
                         request = Request(url)
                         jar.add_cookie_header(request)
                         return request.get_header("Cookie")
@@ -598,7 +604,13 @@ class StreamGetAdapter:
                     )
                 else:
                     client = client_type(proxy_addr=self.proxy)
-            page_data = await client.fetch_web_stream_data(url)
+            if platform == "xiaohongshu":
+                # RedNote's mobile headers omit BaseLiveStream's cookie header.
+                if getattr(client, "cookies", None):
+                    client.mobile_headers["cookie"] = client.cookies
+                page_data = await client.fetch_app_stream_data(url)
+            else:
+                page_data = await client.fetch_web_stream_data(url)
             value = await client.fetch_stream_url(page_data, video_quality=quality)
         except UnsupportedUrlError:
             raise

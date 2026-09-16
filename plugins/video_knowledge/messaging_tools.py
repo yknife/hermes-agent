@@ -11,6 +11,11 @@ from tools.invocation_context import get_tool_invocation_context
 from tools.registry import tool_error, tool_result
 
 from plugins.video_knowledge.backend.app.core.config import Settings
+from plugins.video_knowledge.backend.app.domain.messaging_url import (
+    is_messaging_short_url,
+    messaging_live_platform,
+    messaging_video_platform,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.schemas.messaging import (
     CancelCollectionArguments,
@@ -98,9 +103,13 @@ async def _invoke(name, args):
                 "任务已排队。只回复受理信息和 workflow_id；不要等待或循环查询。"
                 "任务结束后会向当前飞书会话推送结果，也可稍后查询状态。"
             )
-            if parsed.url.startswith("https://live.bilibili.com/"):
+            current = await service.status(result["workflow_id"], origin)
+            if current["job_type"] == "RECORD_LIVE":
+                label = {"bilibili": "B站", "xiaohongshu": "小红书"}.get(
+                    current["platform"], "直播"
+                )
                 result["recording_note"] = (
-                    "B站直播按每1小时分段录制，未满1小时下播也会保存。"
+                    f"{label}直播按每1小时分段录制，未满1小时下播也会保存。"
                     + (
                         f"单次总上限{settings.messaging_max_video_duration_seconds // 60}分钟，"
                         if settings.messaging_max_video_duration_seconds
@@ -164,6 +173,7 @@ MESSAGING_TOOLS = tuple(
             "collect_video",
             "Queue one Bilibili, Douyin, or Xiaohongshu video for collection and analysis. "
             "Also accepts Bilibili live rooms at https://live.bilibili.com/{room_id}; "
+            "and Xiaohongshu livestream room URLs or official xhslink share links. "
             "records hourly parts up to the configured total limit. Relay recording_note. "
             "Immediately acknowledge the returned workflow ID; never poll in a loop. "
             "Completion is pushed to the "
@@ -207,11 +217,6 @@ _FAST_COLLECT_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 def fast_collect_url(text: str) -> str | None:
     """Extract one explicit allowlisted video URL for Gateway fast admission."""
     value = str(text or "")
-    if (
-        not any(intent in value for intent in _FAST_COLLECT_INTENTS)
-        and "live.bilibili.com/" not in value
-    ):
-        return None
     candidates = [
         match.group(0).rstrip(".,;:!?，。；：！？)]}）】")
         for match in _FAST_COLLECT_URL.finditer(value)
@@ -219,6 +224,16 @@ def fast_collect_url(text: str) -> str | None:
     if len(candidates) != 1:
         return None
     try:
-        return CollectVideoArguments(url=candidates[0]).url
+        url = CollectVideoArguments(url=candidates[0]).url
+        if (
+            any(intent in value for intent in _FAST_COLLECT_INTENTS)
+            or messaging_live_platform(url)
+            or (
+                is_messaging_short_url(url)
+                and messaging_video_platform(url) == "xiaohongshu"
+            )
+        ):
+            return url
+        return None
     except ValidationError:
         return None

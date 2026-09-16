@@ -54,8 +54,12 @@ class LiveRecordingPipeline:
             raise ValueError("直播任务缺少 source_id")
         payload = json.loads(job.input_json)
         source = await self.media_service.get_source(job.source_id)
+        platform_label = {"bilibili": "B站", "xiaohongshu": "小红书"}.get(
+            source.platform, source.platform
+        )
+        live_url = source.url
         if payload.get("messaging_capture"):
-            await self.messaging_url_guard.validate_input(source.url)
+            live_url = await self.messaging_url_guard.validate_input(source.url)
             await enforce_messaging_storage_limit(self.storage_root, payload)
         recovery = await self.live_service.recoverable_session(source.id)
         temp_dir = self._session_temp_dir(recovery, job.id)
@@ -84,7 +88,7 @@ class LiveRecordingPipeline:
             message="正在检测直播状态",
         )
         status = await self.resolver.resolve(
-            source.url,
+            live_url,
             source.platform,
             quality=quality,
             **(
@@ -98,7 +102,7 @@ class LiveRecordingPipeline:
             status = replace(
                 status,
                 session_key=f"{status.session_key}:part{part}",
-                title=f"{status.title or 'B站直播'} · 第{part}段",
+                title=f"{status.title or platform_label + '直播'} · 第{part}段",
             )
         await self.live_service.mark_checked(source.id, poll_interval)
 
@@ -123,7 +127,9 @@ class LiveRecordingPipeline:
                     error_message="直播已经结束，但没有找到可恢复的录制分片",
                 )
             if payload.get("messaging_capture"):
-                raise MediaUnavailableError("B站直播间当前未开播；开播后请重试")
+                raise MediaUnavailableError(
+                    f"{platform_label}直播间当前未开播；开播后请重试"
+                )
             await self.state_machine.wait_for_live(
                 job.id,
                 worker_id,
@@ -189,7 +195,7 @@ class LiveRecordingPipeline:
                 if offset > 0:
                     await asyncio.sleep(reconnect_delay)
                     refreshed = await self.resolver.resolve(
-                        source.url,
+                        live_url,
                         source.platform,
                         quality=quality,
                         **(

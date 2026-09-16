@@ -7,7 +7,6 @@ import shutil
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import JobType, WorkflowStatus
 from plugins.video_knowledge.backend.app.domain.errors import JobInvalidTransitionError
+from plugins.video_knowledge.backend.app.domain.messaging_url import (
+    is_messaging_short_url,
+    messaging_live_platform,
+    messaging_video_platform,
+)
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     AppSetting,
     CollectionWorkflow,
@@ -44,6 +48,8 @@ from plugins.video_knowledge.backend.app.services.outbox_service import (
 from plugins.video_knowledge.backend.app.services.storage_service import (
     STORAGE_SETTINGS_KEY,
 )
+from plugins.video_knowledge.backend.media_adapters.errors import MediaToolError
+from plugins.video_knowledge.backend.media_adapters.security import MessagingUrlGuard
 
 
 @dataclass(frozen=True, repr=False)
@@ -61,10 +67,17 @@ class CollectionAccessError(Exception):
 
 
 class CollectionService:
-    def __init__(self, database: Database, settings: Settings):
+    def __init__(
+        self,
+        database: Database,
+        settings: Settings,
+        *,
+        url_guard: MessagingUrlGuard | None = None,
+    ):
         self.database = database
         self.settings = settings
         self.jobs = JobStateMachine(database)
+        self.url_guard = url_guard or MessagingUrlGuard()
 
     @staticmethod
     def _inbound_key(origin: CollectionOrigin) -> str:
@@ -132,7 +145,27 @@ class CollectionService:
 
     async def collect(self, url: str, origin: CollectionOrigin) -> dict:
         url = CollectVideoArguments(url=url).url
-        is_live = urlsplit(url).hostname == "live.bilibili.com"
+        if (
+            is_messaging_short_url(url)
+            and messaging_video_platform(url) == "xiaohongshu"
+        ):
+            if not self.settings.messaging_ingest_allowed(origin.platform):
+                raise CollectionAccessError("Messaging video collection is disabled.")
+            # Resolve before the write transaction, preserving replay even if the
+            # share link later expires. The adapter validates every redirect/DNS hop.
+            async with self.database.session() as lookup:
+                previous = await lookup.scalar(
+                    select(WorkflowSubscription).where(
+                        WorkflowSubscription.inbound_idempotency_key
+                        == self._inbound_key(origin)
+                    )
+                )
+            if previous is None:
+                try:
+                    url = await self.url_guard.validate_input(url)
+                except MediaToolError as exc:
+                    raise CollectionAccessError(str(exc)) from None
+        is_live = messaging_live_platform(url) is not None
         canonical, platform = normalize_url(url)
         inbound_key = self._inbound_key(origin)
         # Serialize replay, quotas, reuse, subscription, job/event and cache-hit
@@ -549,7 +582,8 @@ class CollectionService:
             job = await session.get(Job, job_id) if job_id else None
             platform = source.platform if source is not None else None
             refresh_cookie_config = bool(
-                job is not None and job.type == JobType.INGEST_VIDEO.value
+                job is not None
+                and job.type in {JobType.INGEST_VIDEO.value, JobType.RECORD_LIVE.value}
             )
             cookies_file = (
                 await CookieSettingsService(self.database, self.settings).resolve(

@@ -20,7 +20,7 @@ _XIAOHONGSHU_SHORT_HOSTS = {
 def validate_messaging_video_url(
     value: str, *, expected_platform: str | None = None
 ) -> str:
-    """Return an allowlisted video or Bilibili live-room URL."""
+    """Return an allowlisted video or Bilibili/Xiaohongshu live-room URL."""
     if not value or any(
         character.isspace() or ord(character) < 32 for character in value
     ):
@@ -43,7 +43,7 @@ def validate_messaging_video_url(
     platform = _platform_for_shape(host, parsed.path, parsed.query)
     if platform is None:
         raise ValueError(
-            "Only Bilibili, Douyin, and Xiaohongshu on-demand video URLs or "
+            "Only supported video URLs, Bilibili/Xiaohongshu live rooms, or "
             "approved short links are allowed"
         )
     if expected_platform is not None and platform != expected_platform:
@@ -94,7 +94,22 @@ def is_b23_url(value: str) -> bool:
     return (urlsplit(value).hostname or "").lower().rstrip(".") == _BILIBILI_SHORT_HOST
 
 
+def messaging_live_platform(value: str) -> str | None:
+    parsed = urlsplit(value)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host == "live.bilibili.com" and re.fullmatch(r"/[1-9][0-9]*/?", parsed.path):
+        return "bilibili"
+    if host == _XIAOHONGSHU_HOST and re.fullmatch(
+        r"/(?:hina/)?livestream/(?:[A-Za-z0-9_-]+/)?[1-9][0-9]*/?", parsed.path
+    ):
+        return "xiaohongshu"
+    return None
+
+
 def _platform_for_shape(host: str, path: str, query: str) -> str | None:
+    live = messaging_live_platform(urlunsplit(("https", host, path, query, "")))
+    if live:
+        return live
     if host == "live.bilibili.com" and re.fullmatch(r"/[1-9][0-9]*/?", path):
         return "bilibili"
     if host == _BILIBILI_SHORT_HOST and re.fullmatch(r"/[A-Za-z0-9]+/?", path):
