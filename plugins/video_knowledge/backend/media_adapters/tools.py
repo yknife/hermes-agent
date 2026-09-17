@@ -591,19 +591,31 @@ class StreamGetAdapter:
         if client.cookies:
             headers["cookie"] = client.cookies
         signature = ab_sign(params, headers["user-agent"])
-        body = await async_req(
-            "https://webcast.amemv.com/webcast/room/reflow/info/?"
-            + params
-            + "&a_bogus="
-            + signature,
-            proxy_addr=self.proxy,
-            headers=headers,
+        for attempt in range(2 if client.cookies else 1):
+            if attempt:
+                # Desktop login cookies can invalidate this public mobile API.
+                # Retry once anonymously without modifying the saved cookie file.
+                headers.pop("cookie", None)
+            body = await async_req(
+                "https://webcast.amemv.com/webcast/room/reflow/info/?"
+                + params
+                + "&a_bogus="
+                + signature,
+                proxy_addr=self.proxy,
+                headers=headers,
+            )
+            try:
+                data = json.loads(body)
+                data = data.get("data") if isinstance(data, dict) else None
+                room = data.get("room") if isinstance(data, dict) else None
+            except (ValueError, TypeError):
+                room = None
+            if isinstance(room, dict) and room.get("status") in {2, 4}:
+                room["anchor_name"] = (room.get("owner") or {}).get("nickname")
+                return room
+        raise MediaToolError(
+            "抖音直播信息获取失败，已尝试匿名解析，请更新 Cookies 或稍后重试"
         )
-        room = json.loads(body).get("data", {}).get("room")
-        if not isinstance(room, dict) or "status" not in room:
-            raise MediaToolError("抖音直播信息获取失败，请检查登录状态或稍后重试")
-        room["anchor_name"] = room.get("owner", {}).get("nickname")
-        return room
 
     async def resolve(
         self,
@@ -657,7 +669,7 @@ class StreamGetAdapter:
             else:
                 page_data = await client.fetch_web_stream_data(url)
             value = await client.fetch_stream_url(page_data, video_quality=quality)
-        except UnsupportedUrlError:
+        except MediaToolError:
             raise
         except Exception as exc:
             raise MediaToolError("直播平台解析失败") from exc

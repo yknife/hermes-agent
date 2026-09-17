@@ -139,13 +139,54 @@ async def test_real_douyin_parser_with_cookies(tmp_path, monkeypatch, mobile, on
         assert result.streams
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_response", ['{"data":{}}', "null", "<html>denied</html>"])
+@pytest.mark.parametrize("recovered", [True, False])
+async def test_mobile_cookie_rejection_retries_once_anonymously(
+    tmp_path, monkeypatch, bad_response, recovered
+):
+    from plugins.video_knowledge.backend.media_adapters.errors import MediaToolError
+
+    transport = importlib.import_module("streamget.requests.async_http")
+    cookies = tmp_path / "cookies.txt"
+    original = (
+        "# Netscape HTTP Cookie File\n.douyin.com\tTRUE\t/\tFALSE\t0\tttwid\tfixture\n"
+    )
+    cookies.write_text(original)
+    attempts = []
+
+    async def fetch(url, **kwargs):
+        cookie = kwargs["headers"].get("cookie")
+        attempts.append(cookie)
+        if cookie or not recovered:
+            return bad_response
+        return json.dumps({"data": {"room": {"status": 4}}})
+
+    monkeypatch.setattr(transport, "async_req", fetch)
+    call = StreamGetAdapter().resolve(
+        "https://webcast.amemv.com/douyin/webcast/reflow/123?sec_user_id=user123",
+        "douyin",
+        cookies_file=cookies,
+    )
+    if recovered:
+        assert not (await call).is_live
+    else:
+        with pytest.raises(MediaToolError, match="已尝试匿名解析"):
+            await call
+    assert attempts == ["ttwid=fixture", None]
+    assert cookies.read_text() == original
+
+
 def test_live_share_message_and_unsafe_urls():
     from plugins.video_knowledge.backend.app.domain.messaging_url import (
         validate_messaging_video_url,
     )
 
     url = "https://v.douyin.com/uu8xY3bhoD4/"
-    assert fast_collect_url(f"正在直播，直接观看直播！ [篮球直播的抖音直播间]({url})") == url
+    assert (
+        fast_collect_url(f"正在直播，直接观看直播！ [篮球直播的抖音直播间]({url})")
+        == url
+    )
     assert (
         fast_collect_url("https://live.douyin.com/123/")
         == "https://live.douyin.com/123"
