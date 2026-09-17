@@ -20,7 +20,7 @@ _XIAOHONGSHU_SHORT_HOSTS = {
 def validate_messaging_video_url(
     value: str, *, expected_platform: str | None = None
 ) -> str:
-    """Return an allowlisted video or Bilibili/Xiaohongshu live-room URL."""
+    """Return an allowlisted video or Bilibili/Douyin/Xiaohongshu live-room URL."""
     if not value or any(
         character.isspace() or ord(character) < 32 for character in value
     ):
@@ -43,7 +43,7 @@ def validate_messaging_video_url(
     platform = _platform_for_shape(host, parsed.path, parsed.query)
     if platform is None:
         raise ValueError(
-            "Only supported video URLs, Bilibili/Xiaohongshu live rooms, or "
+            "Only supported video URLs, Bilibili/Douyin/Xiaohongshu live rooms, or "
             "approved short links are allowed"
         )
     if expected_platform is not None and platform != expected_platform:
@@ -54,6 +54,8 @@ def validate_messaging_video_url(
     if host == "live.bilibili.com":
         path = path.rstrip("/")
         query = ""
+    if host == "live.douyin.com":
+        path = path.rstrip("/")
     if platform == "douyin" and host in _DOUYIN_HOSTS:
         modal_id = _douyin_modal_id(path, query)
         if modal_id is not None:
@@ -99,6 +101,12 @@ def messaging_live_platform(value: str) -> str | None:
     host = (parsed.hostname or "").lower().rstrip(".")
     if host == "live.bilibili.com" and re.fullmatch(r"/[1-9][0-9]*/?", parsed.path):
         return "bilibili"
+    if host == "live.douyin.com" and re.fullmatch(r"/[A-Za-z0-9_-]+/?", parsed.path):
+        return "douyin"
+    if host == "webcast.amemv.com" and re.fullmatch(
+        r"/douyin/webcast/reflow/[1-9][0-9]*/?", parsed.path
+    ):
+        return "douyin"
     if host == _XIAOHONGSHU_HOST and re.fullmatch(
         r"/(?:hina/)?livestream/(?:[A-Za-z0-9_-]+/)?[1-9][0-9]*/?", parsed.path
     ):

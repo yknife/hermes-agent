@@ -4,6 +4,7 @@ import importlib.metadata
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -564,6 +565,46 @@ class StreamGetAdapter:
         self.factory = factory
         self.proxy = proxy
 
+    async def _douyin_share_data(self, client: Any, url: str) -> dict:
+        """Use the already validated reflow IDs without following a second redirect."""
+        from urllib.parse import parse_qs, urlencode
+
+        from streamget.platforms.douyin.ab_sign import ab_sign
+        from streamget.requests.async_http import async_req
+
+        parsed = urlsplit(url)
+        user_ids = parse_qs(parsed.query).get("sec_user_id", [])
+        if len(user_ids) != 1 or not re.fullmatch(r"[A-Za-z0-9_-]+", user_ids[0]):
+            raise UnsupportedUrlError(
+                "抖音直播分享链接缺少主播标识，请重新复制直播分享链接"
+            )
+        params = urlencode({
+            "type_id": "0",
+            "live_id": "1",
+            "room_id": parsed.path.rstrip("/").rsplit("/", 1)[-1],
+            "sec_user_id": user_ids[0],
+            "version_code": "99.99.99",
+            "app_id": "1128",
+            "is_need_double_stream": "true",
+        })
+        headers = dict(client.mobile_headers)
+        if client.cookies:
+            headers["cookie"] = client.cookies
+        signature = ab_sign(params, headers["user-agent"])
+        body = await async_req(
+            "https://webcast.amemv.com/webcast/room/reflow/info/?"
+            + params
+            + "&a_bogus="
+            + signature,
+            proxy_addr=self.proxy,
+            headers=headers,
+        )
+        room = json.loads(body).get("data", {}).get("room")
+        if not isinstance(room, dict) or "status" not in room:
+            raise MediaToolError("抖音直播信息获取失败，请检查登录状态或稍后重试")
+        room["anchor_name"] = room.get("owner", {}).get("nickname")
+        return room
+
     async def resolve(
         self,
         url: str,
@@ -594,7 +635,9 @@ class StreamGetAdapter:
                             if cookie.expires == 0:
                                 cookie.expires = None
                         jar.clear_expired_cookies()
-                        request = Request(url)
+                        request = Request(
+                            "https://live.douyin.com/" if platform == "douyin" else url
+                        )
                         jar.add_cookie_header(request)
                         return request.get_header("Cookie")
 
@@ -604,7 +647,9 @@ class StreamGetAdapter:
                     )
                 else:
                     client = client_type(proxy_addr=self.proxy)
-            if platform == "xiaohongshu":
+            if platform == "douyin" and urlsplit(url).hostname == "webcast.amemv.com":
+                page_data = await self._douyin_share_data(client, url)
+            elif platform == "xiaohongshu":
                 # RedNote's mobile headers omit BaseLiveStream's cookie header.
                 if getattr(client, "cookies", None):
                     client.mobile_headers["cookie"] = client.cookies

@@ -145,10 +145,10 @@ class CollectionService:
 
     async def collect(self, url: str, origin: CollectionOrigin) -> dict:
         url = CollectVideoArguments(url=url).url
-        if (
-            is_messaging_short_url(url)
-            and messaging_video_platform(url) == "xiaohongshu"
-        ):
+        if is_messaging_short_url(url) and messaging_video_platform(url) in {
+            "xiaohongshu",
+            "douyin",
+        }:
             if not self.settings.messaging_ingest_allowed(origin.platform):
                 raise CollectionAccessError("Messaging video collection is disabled.")
             # Resolve before the write transaction, preserving replay even if the

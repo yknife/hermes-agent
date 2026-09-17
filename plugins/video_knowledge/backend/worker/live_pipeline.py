@@ -54,9 +54,11 @@ class LiveRecordingPipeline:
             raise ValueError("直播任务缺少 source_id")
         payload = json.loads(job.input_json)
         source = await self.media_service.get_source(job.source_id)
-        platform_label = {"bilibili": "B站", "xiaohongshu": "小红书"}.get(
-            source.platform, source.platform
-        )
+        platform_label = {
+            "bilibili": "B站",
+            "xiaohongshu": "小红书",
+            "douyin": "抖音",
+        }.get(source.platform, source.platform)
         live_url = source.url
         if payload.get("messaging_capture"):
             live_url = await self.messaging_url_guard.validate_input(source.url)

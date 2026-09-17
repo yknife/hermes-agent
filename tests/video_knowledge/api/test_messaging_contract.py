@@ -71,6 +71,8 @@ def test_invalid_messaging_policy_fails_closed(values):
         "https://www.douyin.com/video/7672313492216548651",
         "http://www.douyin.com/video/7672313492216548651?from=share",
         "https://v.douyin.com/iRNBho6u/",
+        "https://live.douyin.com/123456",
+        "https://webcast.amemv.com/douyin/webcast/reflow/123?sec_user_id=abc",
         "https://www.iesdouyin.com/share/video/7672313492216548651/",
         "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
         (
@@ -114,7 +116,7 @@ def test_collect_contract_canonicalizes_douyin_modal_video_url():
         "https://b23.tv/",
         "https://b23.tv.evil.test/AbCd123",
         "https://b23.tv/AbCd123\n",
-        "https://live.douyin.com/123456",
+        "https://live.douyin.com/",
         "https://www.douyin.com/user/MS4wLjABAAAA",
         "https://www.douyin.com/video/not-numeric",
         "https://v.douyin.com/",

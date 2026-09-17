@@ -141,7 +141,11 @@ class HourlyInspector(LiveInspector):
 )
 @pytest.mark.parametrize(
     "room_url",
-    ["https://live.bilibili.com/123", "https://www.xiaohongshu.com/livestream/123"],
+    [
+        "https://live.bilibili.com/123",
+        "https://www.xiaohongshu.com/livestream/123",
+        "https://live.douyin.com/123",
+    ],
 )
 async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel, room_url):
     (tmp_path / "storage").mkdir()

@@ -237,7 +237,7 @@ async def test_failed_owner_can_retry_latest_once_and_subscriber_cannot(tmp_path
 @pytest.mark.asyncio
 async def test_retry_refreshes_douyin_cookies_and_returns_platform_guidance(tmp_path):
     database, service = await _service(tmp_path / "app.db")
-    url = "https://v.douyin.com/oPtMcpSs3-c/"
+    url = "https://www.douyin.com/video/7672313492216548651"
     try:
         accepted = await service.collect(url, _origin())
         machine = JobStateMachine(database)

@@ -159,6 +159,7 @@ def _platform_for_host(host: str) -> str:
         "vimeo.com": "vimeo",
         "douyin.com": "douyin",
         "iesdouyin.com": "douyin",
+        "webcast.amemv.com": "douyin",
         "xiaohongshu.com": "xiaohongshu",
         "xhslink.cn": "xiaohongshu",
         "xhslink.com": "xiaohongshu",
