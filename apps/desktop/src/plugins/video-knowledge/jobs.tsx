@@ -67,9 +67,9 @@ export function JobsView({ initialJobId }: { initialJobId?: null | string }) {
   })
 
   return (
-    <div className="grid min-h-0 flex-1 grid-cols-[minmax(28rem,1.45fr)_minmax(18rem,0.75fr)]">
-      <section className="min-h-0 border-r border-(--ui-stroke-secondary)">
-        <div className="flex items-center justify-between gap-4 border-b border-(--ui-stroke-secondary) px-5 py-3">
+    <div className="grid min-h-0 min-w-0 flex-1 grid-cols-[minmax(0,1.45fr)_minmax(0,0.75fr)]">
+      <section className="flex min-h-0 min-w-0 flex-col border-r border-(--ui-stroke-secondary)">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-(--ui-stroke-secondary) px-5 py-3">
           <div>
             <h2 className="text-sm font-semibold">任务中心</h2>
             <p className="mt-0.5 text-xs text-muted-foreground">状态由 SQLite 持久化，页面定时同步权威状态。</p>
@@ -99,7 +99,7 @@ export function JobsView({ initialJobId }: { initialJobId?: null | string }) {
             </Select>
           </div>
         </div>
-        <ScrollArea className="h-[calc(100%-4rem)] p-4">
+        <ScrollArea className="min-h-0 min-w-0 flex-1 p-4 [&_[data-slot=scroll-area-viewport]>div]:block!">
           {jobs.isLoading ? (
             <Loader className="mx-auto mt-12" />
           ) : !jobs.data?.items.length ? (
@@ -109,26 +109,26 @@ export function JobsView({ initialJobId }: { initialJobId?: null | string }) {
               const owner = jobOwnerLabel(job, media.data ?? [], liveSources.data ?? [])
 
               return <article
-                className={`mb-3 rounded-lg border p-4 ${activeJobId === job.id ? 'border-primary/50 bg-primary/5' : 'border-(--ui-stroke-secondary) bg-(--ui-bg-secondary)'}`}
+                className={`mb-3 min-w-0 rounded-lg border p-4 ${activeJobId === job.id ? 'border-primary/50 bg-primary/5' : 'border-(--ui-stroke-secondary) bg-(--ui-bg-secondary)'}`}
                 key={job.id}
                 onClick={() => setSelected(job.id)}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
                       <strong className="text-sm">{job.type}</strong>
                       <StatusBadge status={job.status} />
                     </div>
                     <div className="mt-1 text-xs text-muted-foreground">
                       {job.stage} · 尝试 {job.attempt_count}/{job.max_attempts}
                     </div>
-                    <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-(--ui-text-secondary)" title={owner}>
+                    <div className="mt-1 flex min-w-0 items-start gap-1.5 text-xs text-(--ui-text-secondary)" title={owner}>
                       <Codicon className="shrink-0" name={job.type === 'RECORD_LIVE' ? 'radio-tower' : 'video'} />
-                      <span className="truncate">归属：{owner}</span>
+                      <span className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">归属：{owner}</span>
                     </div>
                     <code className="mt-1 block truncate text-[0.65rem] text-muted-foreground">{job.id}</code>
                   </div>
-                  <strong className="text-sm tabular-nums">{job.progress.toFixed(0)}%</strong>
+                  <strong className="shrink-0 text-sm tabular-nums">{job.progress.toFixed(0)}%</strong>
                 </div>
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-(--ui-bg-quaternary)">
                   <div
@@ -137,7 +137,7 @@ export function JobsView({ initialJobId }: { initialJobId?: null | string }) {
                   />
                 </div>
                 {job.error_message && (
-                  <div className="mt-3 rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  <div className="mt-3 [overflow-wrap:anywhere] rounded bg-destructive/10 px-3 py-2 text-xs text-destructive">
                     <strong>{job.error_code ?? 'FAILED'}：</strong>
                     {job.error_message}
                   </div>
@@ -149,13 +149,13 @@ export function JobsView({ initialJobId }: { initialJobId?: null | string }) {
         </ScrollArea>
       </section>
 
-      <aside className="min-h-0">
+      <aside className="flex min-h-0 min-w-0 flex-col">
         <div className="border-b border-(--ui-stroke-secondary) px-4 py-3">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             任务事件（北京时间）
           </h2>
         </div>
-        <ScrollArea className="h-[calc(100%-2.75rem)] p-4">
+        <ScrollArea className="min-h-0 min-w-0 flex-1 p-4 [&_[data-slot=scroll-area-viewport]>div]:block!">
           {!activeJobId ? (
             <EmptyState title="选择任务查看事件" />
           ) : events.isLoading ? (
@@ -167,7 +167,7 @@ export function JobsView({ initialJobId }: { initialJobId?: null | string }) {
               .reverse()
               .map(event => (
               <div
-                className="relative border-l border-(--ui-stroke-secondary) pb-4 pl-4 text-xs last:pb-0"
+                className="relative [overflow-wrap:anywhere] border-l border-(--ui-stroke-secondary) pb-4 pl-4 text-xs last:pb-0"
                 key={event.event_id}
               >
                 <span className="absolute -left-1 top-1 size-2 rounded-full bg-primary" />
