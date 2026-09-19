@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import (
@@ -34,6 +36,7 @@ from plugins.video_knowledge.backend.app.services.job_service import JobStateMac
 from plugins.video_knowledge.backend.app.services.messaging_quota_service import (
     MessagingQuotaSettingsService,
 )
+from plugins.video_knowledge.backend.media_adapters.security import MessagingUrlGuard
 from plugins.video_knowledge.messaging_tools import (
     cancel_collection,
     collect_video,
@@ -56,6 +59,9 @@ async def _service(path: Path, **settings):
             messaging_allowed_platforms=["feishu"],
             **settings,
         ),
+        url_guard=SimpleNamespace(
+            validate_input=AsyncMock(side_effect=lambda url: url)
+        ),
     )
 
 
@@ -68,6 +74,43 @@ def _origin(user="user-a", message="message-a", chat="chat-a", thread="thread-a"
         session_id=f"session-{user}",
         thread_id=thread,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target,job_type,source_type",
+    [
+        ("https://live.bilibili.com/123", "RECORD_LIVE", "LIVE"),
+        ("https://www.bilibili.com/video/BV1GJ411x7h7", "INGEST_VIDEO", "VIDEO"),
+    ],
+)
+async def test_bilibili_short_link_is_classified_after_redirect(
+    tmp_path, target, job_type, source_type
+):
+    database, service = await _service(tmp_path / "app.db")
+    requests = []
+
+    def redirect(request):
+        requests.append(str(request.url))
+        return httpx.Response(302, headers={"location": target})
+
+    service.url_guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(redirect),
+    )
+    try:
+        receipt = await service.collect("https://b23.tv/Live123", _origin())
+        replay = await service.collect("https://b23.tv/Live123", _origin())
+        assert replay["job_id"] == receipt["job_id"]
+        assert requests == ["https://b23.tv/Live123"]
+        async with database.session() as session:
+            job = await session.get(Job, receipt["job_id"])
+            source = await session.get(Source, job.source_id)
+            assert job.type == job_type
+            assert source.type == source_type
+            assert source.canonical_url == target
+    finally:
+        await database.dispose()
 
 
 @pytest.mark.asyncio
@@ -423,7 +466,9 @@ async def test_tool_requires_bound_context_and_rejects_model_origin(tmp_path):
     try:
         with bind_tool_invocation_context(invocation):
             accepted = json.loads(
-                await collect_video({"url": "https://b23.tv/AbCd123"})
+                await collect_video({
+                    "url": "https://www.bilibili.com/video/BV1GJ411x7h7"
+                })
             )
             latest = json.loads(await get_collection_status({}))
             cancelled = json.loads(await cancel_collection({}))

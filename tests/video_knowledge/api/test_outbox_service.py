@@ -66,7 +66,9 @@ async def test_job_terminal_transaction_projects_one_outbox_per_subscription(tmp
     database = await _database(tmp_path)
     try:
         service, origin = await _collection(database)
-        accepted = await service.collect("https://b23.tv/Terminal123", origin)
+        accepted = await service.collect(
+            "https://www.bilibili.com/video/BV1GJ411x7h7", origin
+        )
         machine = JobStateMachine(database)
         job = await machine.claim_next("worker-a", 60)
         assert job is not None
@@ -130,7 +132,9 @@ async def test_terminal_projection_rolls_back_with_job_when_outbox_write_fails(
     database = await _database(tmp_path)
     try:
         service, origin = await _collection(database)
-        accepted = await service.collect("https://b23.tv/Rollback123", origin)
+        accepted = await service.collect(
+            "https://www.bilibili.com/video/BV1GJ411x7h7", origin
+        )
         machine = JobStateMachine(database)
         job = await machine.claim_next("worker-a", 60)
         assert job is not None
@@ -161,7 +165,7 @@ async def test_claim_heartbeat_ack_and_expired_claim_recovery(tmp_path):
     database = await _database(tmp_path)
     try:
         service, origin = await _collection(database)
-        await service.collect("https://b23.tv/Lease123", origin)
+        await service.collect("https://www.bilibili.com/video/BV1GJ411x7h7", origin)
         machine = JobStateMachine(database)
         job = await machine.claim_next("job-worker", 60)
         assert job is not None
@@ -200,7 +204,7 @@ async def test_concurrent_claimers_cannot_own_the_same_notification(tmp_path):
     database = await _database(tmp_path)
     try:
         service, origin = await _collection(database)
-        await service.collect("https://b23.tv/Concurrent123", origin)
+        await service.collect("https://www.bilibili.com/video/BV1GJ411x7h7", origin)
         machine = JobStateMachine(database)
         job = await machine.claim_next("job-worker", 60)
         assert job is not None
@@ -229,7 +233,7 @@ async def test_fail_uses_bounded_backoff_and_permanent_errors_become_dead(tmp_pa
     database = await _database(tmp_path)
     try:
         service, origin = await _collection(database)
-        await service.collect("https://b23.tv/Backoff123", origin)
+        await service.collect("https://www.bilibili.com/video/BV1GJ411x7h7", origin)
         machine = JobStateMachine(database)
         job = await machine.claim_next("job-worker", 60)
         assert job is not None

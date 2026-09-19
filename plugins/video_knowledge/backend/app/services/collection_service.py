@@ -17,7 +17,6 @@ from plugins.video_knowledge.backend.app.domain.errors import JobInvalidTransiti
 from plugins.video_knowledge.backend.app.domain.messaging_url import (
     is_messaging_short_url,
     messaging_live_platform,
-    messaging_video_platform,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     AppSetting,
@@ -145,11 +144,7 @@ class CollectionService:
 
     async def collect(self, url: str, origin: CollectionOrigin) -> dict:
         url = CollectVideoArguments(url=url).url
-        if is_messaging_short_url(url) and messaging_video_platform(url) in {
-            "xiaohongshu",
-            "douyin",
-            "weibo",
-        }:
+        if is_messaging_short_url(url):
             if not self.settings.messaging_ingest_allowed(origin.platform):
                 raise CollectionAccessError("Messaging video collection is disabled.")
             # Resolve before the write transaction, preserving replay even if the
