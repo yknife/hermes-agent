@@ -1,5 +1,5 @@
 name: video_knowledge
-version: 0.21.1
+version: 0.21.2
 description: "Profile-scoped knowledge tools and opt-in trusted messaging collection."
 author: Video Knowledge Collector
 kind: backend

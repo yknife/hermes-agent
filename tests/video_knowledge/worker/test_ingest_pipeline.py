@@ -259,6 +259,7 @@ async def test_ingest_pipeline_creates_searchable_transcript(tmp_path: Path) -> 
         ASRConfig(),
         120,
         1.5,
+        thumbnail_extractor=FakeFFmpeg(),
     )
     heartbeat = LeaseHeartbeat(state_machine, job.id, worker_id, 60)
     await pipeline.run(job, worker_id, heartbeat)
@@ -273,6 +274,14 @@ async def test_ingest_pipeline_creates_searchable_transcript(tmp_path: Path) -> 
     )
     assert transcript is not None
     assert transcript[1][0].text == "流水线字幕测试"
+    media, assets = await media_service.get_media(completed.media_id)
+    thumbnail_asset = next(asset for asset in assets if asset.kind == "THUMBNAIL")
+    assert media.thumbnail_url == str(
+        tmp_path / "storage" / thumbnail_asset.relative_path
+    )
+    assert (tmp_path / "storage" / thumbnail_asset.relative_path).read_bytes() == (
+        b"fake-jpeg-thumbnail"
+    )
     matches = await TranscriptService(database, tmp_path / "storage").search(
         "字幕测试", media_id=completed.media_id
     )

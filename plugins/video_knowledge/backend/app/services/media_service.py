@@ -617,16 +617,29 @@ class MediaService:
     async def backfill_missing_thumbnails(
         self, extractor: ThumbnailExtractor
     ) -> tuple[int, int]:
-        """Create thumbnails for legacy live/local media without modifying video."""
+        """Create local thumbnails for legacy media without modifying video."""
         generated = 0
         failed = 0
         for media, assets in await self.list_media(limit=10_000):
             try:
                 metadata = json.loads(media.metadata_json)
-                eligible = bool(metadata.get("live") or metadata.get("local"))
+                extractor_name = str(
+                    metadata.get("extractor_key") or metadata.get("extractor") or ""
+                ).casefold()
+                remote_weibo_thumbnail = bool(
+                    extractor_name == "weibo"
+                    and media.thumbnail_url
+                    and media.thumbnail_url.startswith(("http://", "https://"))
+                )
+                eligible = bool(
+                    metadata.get("live")
+                    or metadata.get("local")
+                    or remote_weibo_thumbnail
+                )
             except (TypeError, ValueError):
                 eligible = False
-            if media.thumbnail_url or not eligible:
+                remote_weibo_thumbnail = False
+            if (media.thumbnail_url and not remote_weibo_thumbnail) or not eligible:
                 continue
             video = next(
                 (asset for asset in assets if asset.kind == MediaAssetKind.VIDEO.value),
@@ -656,7 +669,13 @@ class MediaService:
                 )
                 async with self.database.session() as session, session.begin():
                     current = await session.get(MediaItem, media.id)
-                    if current is None or current.thumbnail_url:
+                    if current is None or (
+                        current.thumbnail_url
+                        and not current.thumbnail_url.startswith((
+                            "http://",
+                            "https://",
+                        ))
+                    ):
                         continue
                     current.thumbnail_url = str(target_path)
                     session.add(thumbnail_asset)

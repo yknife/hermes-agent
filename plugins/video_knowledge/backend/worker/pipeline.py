@@ -323,7 +323,7 @@ class IngestVideoPipeline:
             info = await self.inspector.inspect(download.media_path)
             await self._check_cancel(job.id, worker_id, heartbeat)
             thumbnail_path: Path | None = None
-            if is_local and self.thumbnail_extractor is not None:
+            if self.thumbnail_extractor is not None:
                 thumbnail_path = temp_dir / "thumbnail.jpg"
                 await self.thumbnail_extractor.extract_thumbnail(
                     download.media_path, thumbnail_path
