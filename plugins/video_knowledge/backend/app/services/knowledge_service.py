@@ -522,6 +522,10 @@ class KnowledgeService:
             return result
 
         def evenly(items: Sequence[object], limit: int) -> list[object]:
+            if limit <= 0 or not items:
+                return []
+            if limit == 1:
+                return [items[0]]
             if len(items) <= limit:
                 return list(items)
             indexes = {

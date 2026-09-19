@@ -472,6 +472,41 @@ def test_map_schema_hard_limits_generated_array_lengths() -> None:
         assert "degradation_reason" not in definitions[definition_name]["properties"]
 
 
+def test_compact_mapped_bundles_handles_one_remaining_slot() -> None:
+    mapped: list[AnalysisBundle] = []
+    for index in range(11):
+        citation = {
+            "segment_ids": [f"segment_{index}"],
+            "start_ms": index * 1000,
+            "end_ms": (index + 1) * 1000,
+        }
+        mapped.append(
+            AnalysisBundle.model_validate({
+                "summary": f"summary {index}",
+                "chapters": [],
+                "knowledge_points": [],
+                "suggested_qa": [
+                    {
+                        "question": f"anchor question {index}",
+                        "answer": "anchor answer",
+                        "citation": citation,
+                    },
+                    {
+                        "question": f"extra question {index}",
+                        "answer": "extra answer",
+                        "citation": citation,
+                    },
+                ],
+            })
+        )
+
+    result = KnowledgeService._compact_mapped_bundles(mapped)
+
+    assert len(result.suggested_qa) == 12
+    assert result.suggested_qa[0].citation.segment_ids == ["segment_0"]
+    assert result.suggested_qa[-1].citation.segment_ids == ["segment_10"]
+
+
 @pytest.mark.asyncio
 async def test_reduce_bounds_input_and_falls_back_to_valid_map_results() -> None:
     mapped: list[AnalysisBundle] = []

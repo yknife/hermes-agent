@@ -4,7 +4,11 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from plugins.video_knowledge.backend.app.domain.enums import JobStatus, JobType
+from plugins.video_knowledge.backend.app.domain.enums import (
+    JobStage,
+    JobStatus,
+    JobType,
+)
 from plugins.video_knowledge.backend.app.domain.errors import JobLeaseLostError
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Base
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
@@ -49,6 +53,13 @@ class RecordingKnowledgeService:
         return []
 
 
+class ProgressKnowledgeService:
+    async def analyze(self, *_args: object, **kwargs: object) -> list[object]:
+        callback = kwargs["progress_callback"]
+        await callback(1, 13)
+        return []
+
+
 def heartbeat() -> LeaseHeartbeat:
     return cast(LeaseHeartbeat, SimpleNamespace(lost=asyncio.Event()))
 
@@ -77,6 +88,40 @@ async def test_analysis_uses_job_scoped_model_selection(tmp_path: Path) -> None:
 
         assert service.kwargs["analysis_provider"] == "custom:ynknife_local"
         assert service.kwargs["analysis_model"] == "qwen3.5-4b"
+        assert (
+            await JobQueryService(database).get(job.id)
+        ).status == JobStatus.SUCCEEDED
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_analysis_retry_keeps_total_progress_monotonic(tmp_path: Path) -> None:
+    database = await create_database(tmp_path / "analysis-retry-progress.db")
+    machine = JobStateMachine(database)
+    try:
+        await machine.create(
+            job_type=JobType.ANALYZE,
+            input_data={"media_id": "media-1"},
+            media_id="media-1",
+        )
+        job = await machine.claim_next("worker", 30)
+        assert job is not None
+        await machine.update_progress(
+            job.id,
+            "worker",
+            stage=JobStage.ANALYZING,
+            progress=82,
+            message="previous attempt",
+        )
+        job.progress = 82
+
+        await AnalysisPipeline(
+            machine, cast(KnowledgeService, ProgressKnowledgeService())
+        ).run(job, "worker", heartbeat())
+
+        events = await JobQueryService(database).events(job.id)
+        assert min(event.progress for event in events if event.sequence >= 3) >= 82
         assert (
             await JobQueryService(database).get(job.id)
         ).status == JobStatus.SUCCEEDED

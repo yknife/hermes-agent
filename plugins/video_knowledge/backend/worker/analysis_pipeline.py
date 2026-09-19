@@ -43,7 +43,9 @@ class AnalysisPipeline:
                 job.id,
                 worker_id,
                 stage=JobStage.ANALYZING,
-                progress=min(progress, 95),
+                # Automatic retries retain the previous attempt's total progress.
+                # Keep the public progress monotonic until this attempt catches up.
+                progress=max(job.progress, min(progress, 95)),
                 message=f"Hermes analysis progress {completed}/{total}",
             )
 
