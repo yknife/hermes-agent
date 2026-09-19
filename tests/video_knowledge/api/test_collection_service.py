@@ -104,6 +104,7 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
             "xiaohongshu",
             "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
         ),
+        ("weibo", "https://weibo.com/7827771738/N4xlMvjhI"),
     ],
 )
 async def test_messaging_collection_uses_platform_cookie_setting(

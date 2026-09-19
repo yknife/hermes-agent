@@ -21,6 +21,7 @@ COOKIE_PLATFORMS: dict[CookiePlatform, str] = {
     "bilibili": "B\u7ad9",
     "douyin": "\u6296\u97f3",
     "xiaohongshu": "\u5c0f\u7ea2\u4e66",
+    "weibo": "\u5fae\u535a",
     "youtube": "YouTube",
     "vimeo": "Vimeo",
     "twitch": "Twitch",

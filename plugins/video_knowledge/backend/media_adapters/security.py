@@ -118,6 +118,7 @@ class MessagingUrlGuard:
         platform_matches = (
             (expected_platform == "bilibili" and "bili" in platform)
             or (expected_platform == "douyin" and "douyin" in platform)
+            or (expected_platform == "weibo" and "weibo" in platform)
             or (
                 expected_platform == "xiaohongshu"
                 and "xiaohongshu" in platform.replace("_", "")

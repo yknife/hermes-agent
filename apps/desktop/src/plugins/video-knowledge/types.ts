@@ -40,7 +40,7 @@ export interface StorageSettings {
   migration: StorageMigrationStatus
 }
 
-export type CookiePlatform = 'bilibili' | 'douyin' | 'xiaohongshu' | 'youtube' | 'vimeo' | 'twitch'
+export type CookiePlatform = 'bilibili' | 'douyin' | 'xiaohongshu' | 'weibo' | 'youtube' | 'vimeo' | 'twitch'
 
 export interface PlatformCookieSetting {
   platform: CookiePlatform

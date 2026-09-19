@@ -8,6 +8,7 @@ _BILIBILI_SHORT_HOST = "b23.tv"
 _DOUYIN_HOSTS = {"douyin.com", "www.douyin.com"}
 _DOUYIN_SHARE_HOSTS = {"iesdouyin.com", "www.iesdouyin.com"}
 _DOUYIN_SHORT_HOST = "v.douyin.com"
+_WEIBO_SHORT_HOST = "t.cn"
 _XIAOHONGSHU_HOST = "www.xiaohongshu.com"
 _XIAOHONGSHU_SHORT_HOSTS = {
     "xhslink.cn",
@@ -20,7 +21,7 @@ _XIAOHONGSHU_SHORT_HOSTS = {
 def validate_messaging_video_url(
     value: str, *, expected_platform: str | None = None
 ) -> str:
-    """Return an allowlisted video or Bilibili/Douyin/Xiaohongshu live-room URL."""
+    """Return an allowlisted video or supported live-room URL."""
     if not value or any(
         character.isspace() or ord(character) < 32 for character in value
     ):
@@ -43,7 +44,7 @@ def validate_messaging_video_url(
     platform = _platform_for_shape(host, parsed.path, parsed.query)
     if platform is None:
         raise ValueError(
-            "Only supported video URLs, Bilibili/Douyin/Xiaohongshu live rooms, or "
+            "Only supported video URLs, supported live rooms, or "
             "approved short links are allowed"
         )
     if expected_platform is not None and platform != expected_platform:
@@ -88,6 +89,7 @@ def is_messaging_short_url(value: str) -> bool:
     return host in {
         _BILIBILI_SHORT_HOST,
         _DOUYIN_SHORT_HOST,
+        _WEIBO_SHORT_HOST,
         *_XIAOHONGSHU_SHORT_HOSTS,
     }
 
@@ -107,6 +109,11 @@ def messaging_live_platform(value: str) -> str | None:
         r"/douyin/webcast/reflow/[1-9][0-9]*/?", parsed.path
     ):
         return "douyin"
+    if host in {"weibo.com", "www.weibo.com"} and (
+        re.fullmatch(r"/l/wblive/[pm]/show/1022:[0-9]+/?", parsed.path)
+        or re.fullmatch(r"/u/[0-9]+/?", parsed.path)
+    ):
+        return "weibo"
     if host == _XIAOHONGSHU_HOST and re.fullmatch(
         r"/(?:hina/)?livestream/(?:[A-Za-z0-9_-]+/)?[1-9][0-9]*/?", parsed.path
     ):
@@ -135,6 +142,23 @@ def _platform_for_shape(host: str, path: str, query: str) -> str | None:
         return "douyin"
     if host in _DOUYIN_SHARE_HOSTS and re.fullmatch(r"/share/video/[0-9]+/?", path):
         return "douyin"
+    if host == _WEIBO_SHORT_HOST and re.fullmatch(r"/[A-Za-z0-9]+/?", path):
+        return "weibo"
+    if host in {"weibo.com", "www.weibo.com"} and (
+        re.fullmatch(r"/[0-9]+/[A-Za-z0-9]+/?", path)
+        or re.fullmatch(r"/tv/show/[0-9]+:(?:[0-9a-f]{32}|[0-9]{16,})/?", path)
+    ):
+        return "weibo"
+    if host == "m.weibo.cn" and re.fullmatch(
+        r"/(?:status|detail)/[A-Za-z0-9]+/?", path
+    ):
+        return "weibo"
+    if host == "video.weibo.com" and path.rstrip("/") == "/show":
+        values = parse_qs(query, keep_blank_values=True).get("fid", [])
+        if len(values) == 1 and re.fullmatch(
+            r"[0-9]+:(?:[0-9a-f]{32}|[0-9]{16,})", values[0]
+        ):
+            return "weibo"
     if host in _XIAOHONGSHU_SHORT_HOSTS and re.fullmatch(
         r"/[A-Za-z0-9_-]+(?:/[A-Za-z0-9_-]+)?/?", path
     ):

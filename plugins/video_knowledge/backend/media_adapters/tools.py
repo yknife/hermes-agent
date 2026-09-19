@@ -550,6 +550,7 @@ class StreamGetAdapter:
         "xiaohongshu": "RedNoteLiveStream",
         "bilibili": "BilibiliLiveStream",
         "douyin": "DouyinLiveStream",
+        "weibo": "WeiboLiveStream",
         "douyu": "DouyuLiveStream",
         "huya": "HuyaLiveStream",
         "twitch": "TwitchLiveStream",

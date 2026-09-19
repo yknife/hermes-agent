@@ -145,6 +145,7 @@ class HourlyInspector(LiveInspector):
         "https://live.bilibili.com/123",
         "https://www.xiaohongshu.com/livestream/123",
         "https://live.douyin.com/123",
+        "https://weibo.com/l/wblive/p/show/1022:2321325026370190442592",
     ],
 )
 async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel, room_url):

@@ -58,6 +58,7 @@ class LiveRecordingPipeline:
             "bilibili": "B站",
             "xiaohongshu": "小红书",
             "douyin": "抖音",
+            "weibo": "微博",
         }.get(source.platform, source.platform)
         live_url = source.url
         if payload.get("messaging_capture"):

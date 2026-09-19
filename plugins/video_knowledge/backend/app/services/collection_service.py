@@ -148,6 +148,7 @@ class CollectionService:
         if is_messaging_short_url(url) and messaging_video_platform(url) in {
             "xiaohongshu",
             "douyin",
+            "weibo",
         }:
             if not self.settings.messaging_ingest_allowed(origin.platform):
                 raise CollectionAccessError("Messaging video collection is disabled.")
@@ -626,6 +627,7 @@ class CollectionService:
                 "bilibili": "B站",
                 "douyin": "抖音",
                 "xiaohongshu": "小红书",
+                "weibo": "微博",
             }.get(platform, platform or "视频平台")
             retry_state = (
                 (

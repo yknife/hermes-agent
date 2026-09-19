@@ -109,6 +109,7 @@ async def _invoke(name, args):
                     "bilibili": "B站",
                     "xiaohongshu": "小红书",
                     "douyin": "抖音",
+                    "weibo": "微博",
                 }.get(current["platform"], "直播")
                 result["recording_note"] = (
                     f"{label}直播按每1小时分段录制，未满1小时下播也会保存。"
@@ -173,10 +174,11 @@ MESSAGING_TOOLS = tuple(
     for name, description, contract, handler in (
         (
             "collect_video",
-            "Queue one Bilibili, Douyin, or Xiaohongshu video for collection and analysis. "
+            "Queue one Bilibili, Douyin, Xiaohongshu, or Weibo video for collection and analysis. "
             "Also accepts Bilibili live rooms at https://live.bilibili.com/{room_id}; "
             "Douyin live rooms at https://live.douyin.com/{room_id} or v.douyin.com shares; "
             "and Xiaohongshu livestream room URLs or official xhslink share links. "
+            "Also accepts Weibo video, live-room, anchor-page, and t.cn share links. "
             "records hourly parts up to the configured total limit. Relay recording_note. "
             "Immediately acknowledge the returned workflow ID; never poll in a loop. "
             "Completion is pushed to the "
@@ -233,7 +235,7 @@ def fast_collect_url(text: str) -> str | None:
             or messaging_live_platform(url)
             or (
                 is_messaging_short_url(url)
-                and messaging_video_platform(url) in {"xiaohongshu", "douyin"}
+                and messaging_video_platform(url) in {"xiaohongshu", "douyin", "weibo"}
             )
         ):
             return url

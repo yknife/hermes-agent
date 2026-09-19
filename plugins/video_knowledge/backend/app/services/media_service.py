@@ -160,6 +160,9 @@ def _platform_for_host(host: str) -> str:
         "douyin.com": "douyin",
         "iesdouyin.com": "douyin",
         "webcast.amemv.com": "douyin",
+        "weibo.com": "weibo",
+        "weibo.cn": "weibo",
+        "t.cn": "weibo",
         "xiaohongshu.com": "xiaohongshu",
         "xhslink.cn": "xiaohongshu",
         "xhslink.com": "xiaohongshu",
@@ -185,6 +188,10 @@ def classify_source_type(url: str, platform: str) -> SourceType:
         return SourceType.LIVE
     if platform == "douyin" and (
         host == "live.douyin.com" or path.startswith("/live/")
+    ):
+        return SourceType.LIVE
+    if platform == "weibo" and (
+        path.startswith("/l/wblive/") or path.startswith("/u/")
     ):
         return SourceType.LIVE
     if platform == "youtube" and (path == "/live" or path.endswith("/live")):

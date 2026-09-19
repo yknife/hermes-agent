@@ -74,6 +74,14 @@ def test_invalid_messaging_policy_fails_closed(values):
         "https://live.douyin.com/123456",
         "https://webcast.amemv.com/douyin/webcast/reflow/123?sec_user_id=abc",
         "https://www.iesdouyin.com/share/video/7672313492216548651/",
+        "https://weibo.com/7827771738/N4xlMvjhI",
+        "https://m.weibo.cn/status/4189191225395228",
+        "https://m.weibo.cn/detail/4189191225395228",
+        "https://weibo.com/tv/show/1034:4797699866951785",
+        "https://video.weibo.com/show?fid=1034:4967272104787984",
+        "https://weibo.com/l/wblive/p/show/1022:2321325026370190442592",
+        "https://weibo.com/u/7849520225",
+        "https://t.cn/A6Example",
         "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9",
         (
             "https://www.xiaohongshu.com/discovery/item/674051740000000007027a15"
@@ -122,6 +130,13 @@ def test_collect_contract_canonicalizes_douyin_modal_video_url():
         "https://v.douyin.com/",
         "https://v.douyin.com.evil.test/iRNBho6u/",
         "https://www.iesdouyin.com/share/user/123",
+        "https://weibo.com/u/not-numeric",
+        "https://weibo.com/tv/show/not-a-video",
+        "https://video.weibo.com/show?fid=bad",
+        "https://weibo.com/l/wblive/p/show/not-a-room",
+        "https://evilweibo.com/123/AbCd",
+        "https://t.cn/",
+        "https://t.cn.evil.test/AbCd",
         "https://xiaohongshu.com/explore/6411cf99000000001300b6d9",
         "https://www.xiaohongshu.com/user/profile/6411cf99000000001300b6d9",
         "https://www.xiaohongshu.com/explore/not-a-note-id",
@@ -191,6 +206,12 @@ def test_fast_collect_url_requires_one_explicit_intent_and_allowed_url():
     assert fast_collect_url("分析 https://example.com/video/BV1Sxbp6REnB") is None
     douyin = "https://www.douyin.com/video/7672313492216548651"
     assert fast_collect_url(f"采集并分析这个抖音视频：{douyin}") == douyin
+    weibo = "https://weibo.com/7827771738/N4xlMvjhI"
+    assert fast_collect_url(f"采集并分析这个微博视频：{weibo}") == weibo
+    weibo_live = "https://weibo.com/l/wblive/p/show/1022:2321325026370190442592"
+    assert fast_collect_url(weibo_live) == weibo_live
+    weibo_short = "https://t.cn/A6Example"
+    assert fast_collect_url(weibo_short) == weibo_short
     xiaohongshu = "https://www.xiaohongshu.com/explore/6411cf99000000001300b6d9"
     assert fast_collect_url(f"采集并分析这个小红书视频：{xiaohongshu}") == xiaohongshu
     short_xiaohongshu = "https://xhslink.cn/o/7PdV8Tkf8gw"

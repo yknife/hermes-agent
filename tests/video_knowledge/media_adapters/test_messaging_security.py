@@ -121,6 +121,41 @@ async def test_douyin_short_link_and_probe_remain_on_douyin() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "direct",
+    [
+        "https://weibo.com/7827771738/N4xlMvjhI",
+        "https://weibo.com/l/wblive/p/show/1022:2321325026370190442592",
+    ],
+)
+async def test_weibo_short_link_stays_on_weibo_and_preserves_content_type(
+    direct,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"location": direct})
+
+    guard = MessagingUrlGuard(
+        resolver=lambda _host, _port: ("8.8.8.8",),
+        transport=httpx.MockTransport(handler),
+    )
+    assert await guard.validate_input("https://t.cn/A6Example") == direct
+
+    probe_url = "https://weibo.com/7827771738/N4xlMvjhI"
+    assert (
+        await guard.validate_probe(
+            MediaProbe(
+                external_id="fixture",
+                title="fixture",
+                webpage_url=probe_url,
+                platform="Weibo",
+            ),
+            expected_platform="weibo",
+        )
+        == probe_url
+    )
+
+
+@pytest.mark.asyncio
 async def test_douyin_modal_url_is_canonicalized_before_network_access() -> None:
     seen: list[tuple[str, int]] = []
 

@@ -7,6 +7,7 @@ CookiePlatform = Literal[
     "bilibili",
     "douyin",
     "xiaohongshu",
+    "weibo",
     "youtube",
     "vimeo",
     "twitch",
