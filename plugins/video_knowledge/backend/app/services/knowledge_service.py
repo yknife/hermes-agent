@@ -26,6 +26,9 @@ from plugins.video_knowledge.backend.app.services.job_service import (
     JobStateMachine,
     new_id,
 )
+from plugins.video_knowledge.backend.app.services.notification_digest import (
+    valid_notification_digest,
+)
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
     AUTO_KEY,
     create_ingestion,
@@ -459,7 +462,9 @@ class KnowledgeService:
         prompt = (
             "将下面的完整视频知识结果总结为一段适合飞书通知的中文摘要。"
             "必须综合开头、中段和结尾，不要逐条复述，不要添加材料外事实；"
-            "控制在 300 至 600 个汉字。只返回 JSON 对象。\n\n"
+            "只写一个完整自然段，不要标题、编号列表或知识点概览；"
+            "控制在 300 至 600 个汉字，并以完整的中文句号、问号或感叹号结束。"
+            "只返回 JSON 对象。\n\n"
             + json.dumps(
                 bundle.model_dump(mode="json"),
                 ensure_ascii=False,
@@ -484,8 +489,15 @@ class KnowledgeService:
                     **selection,
                 )
                 value = payload.get("summary") if isinstance(payload, dict) else None
-                if isinstance(value, str) and value.strip():
-                    return self._bounded_notification_summary(value)
+                digest = valid_notification_digest(value)
+                if digest is not None:
+                    return digest
+                logger.warning(
+                    "Hermes notification summary rejected incomplete digest "
+                    "attempt=%d/%d",
+                    attempt,
+                    self.structured_attempts,
+                )
             except HermesClientError as exc:
                 logger.warning(
                     "Hermes notification summary failed attempt=%d/%d retryable=%s",
@@ -496,18 +508,6 @@ class KnowledgeService:
                 if not exc.retryable:
                     break
         return None
-
-    @staticmethod
-    def _bounded_notification_summary(value: str, limit: int = 600) -> str:
-        """Keep the model's global summary short without ending mid-sentence."""
-        normalized = " ".join(str(value or "").split())
-        if len(normalized) <= limit:
-            return normalized
-        candidate = normalized[:limit]
-        boundary = max(candidate.rfind(mark) for mark in "。！？.!?")
-        if boundary >= limit // 2:
-            return candidate[: boundary + 1]
-        return candidate.rstrip() + "…"
 
     @classmethod
     def _compact_mapped_bundles(

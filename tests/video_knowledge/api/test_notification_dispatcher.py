@@ -326,6 +326,56 @@ async def test_renderer_uses_model_digest_and_reports_complete_timeline(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_renderer_ignores_persisted_dangling_digest(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        item_id = await _seed(database)
+        async with database.session() as session, session.begin():
+            document = await session.scalar(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.document_type == "summary"
+                )
+            )
+            document.content_json = json.dumps(
+                {
+                    "summary": "完整的案件结论。",
+                    "notification_summary": (
+                        "案件经过。 【知识点概览】 1. 管制背景。 2. 价格。 3."
+                    ),
+                    "degraded": False,
+                    "degraded_ranges": [],
+                },
+                ensure_ascii=False,
+            )
+        dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
+        rendered = "\n".join(
+            part.content
+            for part in render_notification(await dispatcher._load_view(item_id))
+        )
+        assert "完整的案件结论。" in rendered
+        assert "【知识点概览】" not in rendered
+        assert "3." not in rendered
+
+        async with database.session() as session, session.begin():
+            document = await session.scalar(
+                select(KnowledgeDocument).where(
+                    KnowledgeDocument.document_type == "summary"
+                )
+            )
+            content = json.loads(document.content_json)
+            content["summary"] = "完整句子。" * 250
+            document.content_json = json.dumps(content, ensure_ascii=False)
+        rendered = "\n".join(
+            part.content
+            for part in render_notification(await dispatcher._load_view(item_id))
+        )
+        assert "完整句子。…" in rendered
+        assert "【知识点概览】" not in rendered
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_failure_renderer_exposes_only_safe_code_stage_and_advice(tmp_path):
     database = await _database(tmp_path)
     try:

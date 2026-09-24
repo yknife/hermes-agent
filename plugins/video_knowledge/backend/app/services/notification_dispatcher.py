@@ -21,6 +21,10 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     WorkflowSubscription,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.services.notification_digest import (
+    readable_excerpt,
+    valid_notification_digest,
+)
 from plugins.video_knowledge.backend.app.services.outbox_service import (
     OutboxLeaseLostError,
     OutboxService,
@@ -213,6 +217,7 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
     summary_doc = docs.get("summary")
     summary = _json(summary_doc.content_json, {}) if summary_doc else {}
     summary = summary if isinstance(summary, dict) else {}
+    digest = valid_notification_digest(summary.get("notification_summary"))
     degraded = bool(summary.get("degraded")) or terminal_status == "PARTIAL"
 
     if terminal_status in {"SUCCEEDED", "PARTIAL"} and media is not None:
@@ -229,7 +234,8 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
                 f"**时长：** {_duration(media.duration_seconds)}",
                 "**结论：**",
                 _text(
-                    summary.get("notification_summary") or summary.get("summary"),
+                    digest
+                    or readable_excerpt(summary.get("summary"), limit=_SUMMARY_LIMIT),
                     _SUMMARY_LIMIT,
                 ),
             ])

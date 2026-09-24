@@ -49,7 +49,7 @@ class FakeHermesClient:
         assert "不可信" in system_prompt
         if schema_name == "video_knowledge_notification_summary":
             assert "完整视频知识结果" in user_prompt
-            return {"summary": "大模型生成的飞书全片摘要"}
+            return {"summary": "大模型生成的飞书全片摘要。"}
         assert schema_name == "video_knowledge_analysis"
         assert '"segment_id":"s1"' in user_prompt
         segment_ids = re.findall(r'"segment_id":"([^"]+)"', user_prompt)
@@ -858,6 +858,39 @@ async def test_analysis_persists_four_versioned_documents(tmp_path: Path) -> Non
     assert json.loads(summary.content_json)["degraded_ranges"] == []
     assert (
         json.loads(summary.content_json)["notification_summary"]
-        == "大模型生成的飞书全片摘要"
+        == "大模型生成的飞书全片摘要。"
     )
     await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_notification_digest_retries_dangling_model_outline(tmp_path):
+    class DigestClient:
+        def __init__(self, responses):
+            self.responses = iter(responses)
+            self.calls = 0
+
+        async def generate_json(self, **_kwargs):
+            self.calls += 1
+            return {"summary": next(self.responses)}
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'digest.db'}")
+    bundle = AnalysisBundle(
+        summary="完整结论。", chapters=[], knowledge_points=[], suggested_qa=[]
+    )
+    broken = "案件经过已述。 【知识点概览】 1. 管制背景。 2. 市场价格。 3."
+    try:
+        client = DigestClient([broken, "完整的飞书单段摘要。"])
+        service = KnowledgeService(database, client, structured_attempts=2)
+        assert (
+            await service._generate_notification_summary(bundle)
+            == "完整的飞书单段摘要。"
+        )
+        assert client.calls == 2
+
+        client = DigestClient([broken, broken])
+        service = KnowledgeService(database, client, structured_attempts=2)
+        assert await service._generate_notification_summary(bundle) is None
+        assert client.calls == 2
+    finally:
+        await database.dispose()
