@@ -13,16 +13,22 @@ from plugins.video_knowledge.backend.app.domain.errors import (
     TranscriptNotFoundError,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
+    AppSetting,
     Job,
     KnowledgeDocument,
     Transcript,
     TranscriptSegment,
+    WikiCatalog,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.schemas.knowledge import AnalysisBundle
 from plugins.video_knowledge.backend.app.services.job_service import (
     JobStateMachine,
     new_id,
+)
+from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
+    AUTO_KEY,
+    create_ingestion,
 )
 from plugins.video_knowledge.backend.hermes_client import (
     HermesClientError,
@@ -1213,4 +1219,19 @@ class KnowledgeService:
                 session.add(row)
                 rows.append(row)
             await session.flush()
+            setting = await session.get(AppSetting, AUTO_KEY)
+            if setting is not None and json.loads(setting.value_json) is True:
+                catalog = await session.scalar(
+                    select(WikiCatalog).where(WikiCatalog.relative_root == "wiki")
+                )
+                if catalog is None:
+                    raise ValueError("Auto Wiki ingestion requires an initialized Wiki")
+                await create_ingestion(
+                    session,
+                    JobStateMachine(self.database),
+                    catalog.id,
+                    media_id,
+                    rows,
+                    trigger="auto",
+                )
             return rows

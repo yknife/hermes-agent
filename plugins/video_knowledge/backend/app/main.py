@@ -13,6 +13,9 @@ from plugins.video_knowledge.backend.app.api.v1.system import router as system_r
 from plugins.video_knowledge.backend.app.api.v1.websocket import (
     router as websocket_router,
 )
+from plugins.video_knowledge.backend.app.api.v1.wiki_ingestions import (
+    router as wiki_router,
+)
 from plugins.video_knowledge.backend.app.core.config import Settings, get_settings
 from plugins.video_knowledge.backend.app.core.lifecycle import create_lifespan
 from plugins.video_knowledge.backend.app.core.middleware import RequestIdMiddleware
@@ -85,6 +88,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api_v1.include_router(sources_router)
     api_v1.include_router(media_router)
     api_v1.include_router(knowledge_router)
+    api_v1.include_router(wiki_router)
     api_v1.include_router(search_router)
     api_v1.include_router(websocket_router)
     application.include_router(api_v1)

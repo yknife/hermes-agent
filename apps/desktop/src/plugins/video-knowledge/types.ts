@@ -1,6 +1,87 @@
 export type JobStatus =
   'PENDING' | 'RUNNING' | 'WAITING_LIVE' | 'RETRY_WAIT' | 'PAUSED' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'CANCELLED'
 
+export interface WikiPageSummary {
+  page_id: string
+  relative_path: string
+  type: string
+  title: string
+  revision: number
+  tags: string[]
+  source_refs: string[]
+}
+
+export interface WikiCatalog {
+  initialized: boolean
+  items: WikiPageSummary[]
+  tags: string[]
+  types: string[]
+}
+
+export interface WikiCitationRef {
+  item_key: string
+  source_revision: string
+  media_id: string
+  transcript_id: string
+  segment_ids: string[]
+  start_ms: number
+  end_ms: number
+}
+
+export interface WikiPage extends WikiPageSummary {
+  body: string
+  links: { href: string; page_id: string; title: string }[]
+  backlinks: WikiPageSummary[]
+  citation_refs: WikiCitationRef[]
+}
+
+export interface WikiSearchResult {
+  initialized: boolean
+  items: (WikiPageSummary & { excerpt: string })[]
+}
+
+export interface WikiCitationTarget {
+  media_id: string
+  start_ms: number
+  end_ms: number
+  segment_ids: string[]
+  desktop_route: string
+  media_missing: boolean
+}
+
+export interface WikiSourceSnapshot {
+  media_id: string
+  transcript_id: string
+  source_revision: string
+  metadata: Record<string, unknown>
+  transcript: { segments: { id: string; start_ms: number; end_ms: number; text: string }[] }
+  analysis: Record<string, unknown>
+}
+
+export interface WikiSettings {
+  auto_ingest: boolean
+  queued_policy: string
+}
+
+export interface WikiIngestion {
+  id: string
+  media_id: string
+  job_id: string
+  status: JobStatus
+  wiki_status: string
+  needs_review: boolean
+  source_revision: null | string
+  commit_id: null | string
+  error_code: null | string
+}
+
+export interface WikiBackfillPreview {
+  media_id: string
+  status: string
+  document_ids?: string[]
+  can_submit?: boolean
+}
+
 export interface Health {
   status: 'ok' | 'degraded'
   components: Record<string, { detail?: null | string; status: string }>
@@ -18,8 +99,7 @@ export interface RuntimeToolStatus {
   detail?: null | string
 }
 
-export type StorageMigrationPhase =
-  'IDLE' | 'COPYING' | 'VERIFYING' | 'SWITCHING' | 'CLEANING' | 'COMPLETED' | 'FAILED'
+export type StorageMigrationPhase = 'IDLE' | 'COPYING' | 'VERIFYING' | 'SWITCHING' | 'CLEANING' | 'COMPLETED' | 'FAILED'
 
 export interface StorageMigrationStatus {
   id: null | string

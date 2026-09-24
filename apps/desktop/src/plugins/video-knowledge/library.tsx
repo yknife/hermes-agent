@@ -43,13 +43,16 @@ import { stageMediaChatContext, stageMediaCollectionChatContext } from './chat-c
 import { durationLabel, errorMessage, fileSize, readableContent, timestamp } from './format'
 import { buildKnowledgeTimeline } from './knowledge-timeline'
 import type { Media } from './types'
+import { WikiMediaStatus } from './wiki'
 
 export function LibraryView({
   initialMediaId,
-  initialSeekMs
+  initialSeekMs,
+  onOpenWiki
 }: {
   initialMediaId?: null | string
   initialSeekMs?: null | number
+  onOpenWiki: (pageId: string) => void
 }) {
   const queryClient = useQueryClient()
   const [selected, setSelected] = useState<null | string>(initialMediaId ?? null)
@@ -411,6 +414,8 @@ export function LibraryView({
               <p className="text-xs text-destructive">{errorMessage(deleteMediaMutation.error)}</p>
             )}
 
+            <WikiMediaStatus mediaId={activeMedia.id} onOpenWiki={onOpenWiki} />
+
             <div className="grid grid-cols-1 gap-4 2xl:grid-cols-[minmax(24rem,1.25fr)_minmax(20rem,0.9fr)]">
               <div className="space-y-4">
                 {playerExpanded && (
@@ -431,7 +436,13 @@ export function LibraryView({
                   role={playerExpanded ? 'dialog' : undefined}
                 >
                   {playback.isLoading ? (
-                    <div className={playerExpanded ? 'flex h-full w-full items-center justify-center' : 'flex aspect-video items-center justify-center'}>
+                    <div
+                      className={
+                        playerExpanded
+                          ? 'flex h-full w-full items-center justify-center'
+                          : 'flex aspect-video items-center justify-center'
+                      }
+                    >
                       <Loader />
                     </div>
                   ) : playback.data ? (
@@ -450,7 +461,13 @@ export function LibraryView({
                       src={mediaPlaybackUrl(playback.data.path)}
                     />
                   ) : (
-                    <div className={playerExpanded ? 'flex h-full w-full items-center justify-center text-xs text-white/60' : 'flex aspect-video items-center justify-center text-xs text-white/60'}>
+                    <div
+                      className={
+                        playerExpanded
+                          ? 'flex h-full w-full items-center justify-center text-xs text-white/60'
+                          : 'flex aspect-video items-center justify-center text-xs text-white/60'
+                      }
+                    >
                       本地视频文件不可用
                     </div>
                   )}

@@ -539,6 +539,43 @@ class WikiCatalog(Base):
     lease_expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class WikiIngestion(Base):
+    """One durable Wiki request for one immutable four-document analysis bundle."""
+
+    __tablename__ = "wiki_ingestions"
+    __table_args__ = (
+        UniqueConstraint("wiki_id", "bundle_key", name="uq_wiki_ingestion_bundle"),
+        Index("ix_wiki_ingestion_media", "media_id", "created_at"),
+        Index("ix_wiki_ingestion_batch", "batch_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    wiki_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    bundle_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    media_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    document_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    job_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("jobs.id"), nullable=False
+    )
+    trigger: Mapped[str] = mapped_column(String(16), nullable=False)
+    batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_revision: Mapped[str | None] = mapped_column(String(68), nullable=True)
+    commit_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    needs_review: Mapped[bool] = mapped_column(default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WikiSearchState(Base):
+    """Revision represented by the rebuildable FTS projection."""
+
+    __tablename__ = "wiki_search_state"
+
+    wiki_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class WikiCommit(Base):
     __tablename__ = "wiki_commits"
     __table_args__ = (

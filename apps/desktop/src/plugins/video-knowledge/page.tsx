@@ -7,16 +7,25 @@ import { SystemSettingsView } from './asr-settings'
 import { useVideoKnowledgeI18n } from './i18n'
 import { JobsView } from './jobs'
 import { LibraryView } from './library'
+import { WikiView } from './wiki'
 
-type View = 'add' | 'asr' | 'jobs' | 'library'
+type View = 'add' | 'asr' | 'jobs' | 'library' | 'wiki'
 
 export function VideoKnowledgePage() {
   const t = useVideoKnowledgeI18n()
   const routeParams = new URLSearchParams(window.location.hash.split('?', 2)[1] ?? '')
   const routedMediaId = routeParams.get('media')
+  const routedWikiId = routeParams.get('wiki')
   const routedTimestamp = Number(routeParams.get('t'))
-  const [view, setView] = useState<View>(routedMediaId ? 'library' : 'add')
+  const [view, setView] = useState<View>(routedWikiId ? 'wiki' : routedMediaId ? 'library' : 'add')
   const [createdJobId, setCreatedJobId] = useState<null | string>(null)
+  const [openedMediaId, setOpenedMediaId] = useState<null | string>(routedMediaId)
+
+  const [openedSeekMs, setOpenedSeekMs] = useState<null | number>(
+    Number.isFinite(routedTimestamp) && routedTimestamp >= 0 ? routedTimestamp : null
+  )
+
+  const [openedWikiId, setOpenedWikiId] = useState<null | string>(routedWikiId)
 
   const health = useQuery({
     queryFn: fetchHealth,
@@ -46,6 +55,10 @@ export function VideoKnowledgePage() {
                   <Codicon name="library" />
                   媒体库
                 </TabsTrigger>
+                <TabsTrigger value="wiki">
+                  <Codicon name="book" />
+                  知识库
+                </TabsTrigger>
                 <TabsTrigger value="jobs">
                   <Codicon name="list-unordered" />
                   任务中心
@@ -74,8 +87,22 @@ export function VideoKnowledgePage() {
       )}
       {view === 'library' && (
         <LibraryView
-          initialMediaId={routedMediaId}
-          initialSeekMs={Number.isFinite(routedTimestamp) && routedTimestamp >= 0 ? routedTimestamp : null}
+          initialMediaId={openedMediaId}
+          initialSeekMs={openedSeekMs}
+          onOpenWiki={pageId => {
+            setOpenedWikiId(pageId)
+            setView('wiki')
+          }}
+        />
+      )}
+      {view === 'wiki' && (
+        <WikiView
+          initialPageId={openedWikiId}
+          onOpenMedia={(mediaId, startMs) => {
+            setOpenedMediaId(mediaId)
+            setOpenedSeekMs(startMs)
+            setView('library')
+          }}
         />
       )}
       {view === 'jobs' && <JobsView initialJobId={createdJobId} />}

@@ -40,6 +40,7 @@ class JobStage(StrEnum):
 
 class JobType(StrEnum):
     INGEST_VIDEO = "INGEST_VIDEO"
+    WIKI_INGEST = "WIKI_INGEST"
     RECORD_LIVE = "RECORD_LIVE"
     ANALYZE = "ANALYZE"
     EXPORT = "EXPORT"

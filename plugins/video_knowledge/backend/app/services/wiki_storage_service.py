@@ -228,6 +228,9 @@ class WikiStorageService:
                 raise WikiStorageError("Wiki catalog path mismatch")
             return row
 
+    async def current_revision(self) -> int:
+        return (await self._catalog()).revision
+
     async def acquire_lease(self, owner: str, seconds: int = 60) -> WikiLease:
         if not owner or seconds < 1:
             raise WikiLeaseError("Invalid Wiki lease")

@@ -18,6 +18,9 @@ from plugins.video_knowledge.backend.app.services.media_service import MediaServ
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
 )
+from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
+    WikiStorageService,
+)
 from plugins.video_knowledge.backend.hermes_client import HermesClient
 from plugins.video_knowledge.backend.media_adapters import (
     FFmpegAdapter,
@@ -34,6 +37,7 @@ from plugins.video_knowledge.backend.worker.pipeline import (
     DemoPipeline,
     IngestVideoPipeline,
 )
+from plugins.video_knowledge.backend.worker.wiki_pipeline import WikiPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +128,11 @@ class WorkerRunner:
                 structured_attempts=self.settings.analysis_structured_attempts,
             ),
         )
+        self.wiki_pipeline = WikiPipeline(
+            database,
+            self.state_machine,
+            WikiStorageService(database, self.settings.storage_root),
+        )
 
     async def run(self) -> None:
         logger.info("worker_started", extra={"worker_id": self.worker_id})
@@ -175,6 +184,8 @@ class WorkerRunner:
                     await self.live_pipeline.run(job, self.worker_id, heartbeat)
                 elif job.type == JobType.ANALYZE.value:
                     await self.analysis_pipeline.run(job, self.worker_id, heartbeat)
+                elif job.type == JobType.WIKI_INGEST.value:
+                    await self.wiki_pipeline.run(job, self.worker_id, heartbeat)
                 else:
                     await self.demo_pipeline.run(job.id, self.worker_id, heartbeat)
         except asyncio.CancelledError:

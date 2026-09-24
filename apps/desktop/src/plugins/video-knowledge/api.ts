@@ -25,7 +25,15 @@ import type {
   RuntimeStatus,
   StorageSettings,
   Transcript,
-  TranscriptSearchResult
+  TranscriptSearchResult,
+  WikiBackfillPreview,
+  WikiCatalog,
+  WikiCitationTarget,
+  WikiIngestion,
+  WikiPage,
+  WikiSearchResult,
+  WikiSettings,
+  WikiSourceSnapshot
 } from './types'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
@@ -64,8 +72,7 @@ export const updateCookieSettings = (platform: CookiePlatform, cookiesFile: null
     method: 'PUT',
     body: { cookies_file: cookiesFile }
   })
-export const fetchMessagingQuotaSettings = () =>
-  call<MessagingQuotaSettings>('/system/messaging-quotas')
+export const fetchMessagingQuotaSettings = () => call<MessagingQuotaSettings>('/system/messaging-quotas')
 export const updateMessagingQuotaSettings = (value: MessagingQuotaSettings) =>
   call<MessagingQuotaSettings>('/system/messaging-quotas', {
     method: 'PUT',
@@ -142,6 +149,39 @@ export const analyze = (mediaId: string, selection: null | { model: string; prov
       analysis_model: selection?.model ?? null,
       analysis_provider: selection?.provider ?? null
     }
+  })
+
+export const fetchWikiCatalog = (pageType?: string, tag?: string) =>
+  call<WikiCatalog>(
+    `/wiki/pages?${new URLSearchParams({ ...(pageType ? { page_type: pageType } : {}), ...(tag ? { tag } : {}) })}`
+  )
+export const fetchWikiPage = (pageId: string) => call<WikiPage>(`/wiki/pages/${encodeURIComponent(pageId)}`)
+export const searchWiki = (query: string, pageType?: string, tag?: string) =>
+  call<WikiSearchResult>(
+    `/wiki/search?${new URLSearchParams({ q: query, ...(pageType ? { page_type: pageType } : {}), ...(tag ? { tag } : {}) })}`
+  )
+export const rebuildWikiSearch = () =>
+  call<{ count: number; initialized: boolean; revision: number }>('/wiki/search/rebuild', { method: 'POST' })
+export const resolveWikiCitation = (pageId: string, itemKey: string) =>
+  call<WikiCitationTarget>(`/wiki/pages/${encodeURIComponent(pageId)}/citations/${encodeURIComponent(itemKey)}`)
+export const fetchWikiSource = (mediaId: string, revision: string) =>
+  call<WikiSourceSnapshot>(`/wiki/sources/${encodeURIComponent(mediaId)}/${encodeURIComponent(revision)}`)
+export const fetchWikiSettings = () => call<WikiSettings>('/wiki/settings')
+export const updateWikiSettings = (autoIngest: boolean) =>
+  call<WikiSettings>('/wiki/settings', { method: 'PUT', body: { auto_ingest: autoIngest } })
+export const fetchWikiIngestions = (mediaId?: string) =>
+  call<WikiIngestion[]>(`/wiki/ingestions${mediaId ? `?media_id=${encodeURIComponent(mediaId)}` : ''}`)
+export const submitWikiMedia = (mediaId: string) =>
+  call<{ ingestion_id: string; job_id: string }>(`/wiki/media/${encodeURIComponent(mediaId)}/ingest`, {
+    method: 'POST'
+  })
+export const previewWikiBackfill = () =>
+  call<WikiBackfillPreview[]>('/wiki/backfill/preview', { method: 'POST', body: {} })
+export const submitWikiBackfill = () =>
+  call<{ batch_id: string; job_ids: string[] }>('/wiki/backfill', { method: 'POST', body: {} })
+export const cancelWikiBackfill = (batchId: string) =>
+  call<{ batch_id: string; cancelled_job_ids: string[] }>(`/wiki/backfill/${encodeURIComponent(batchId)}/cancel`, {
+    method: 'POST'
   })
 
 export function mediaPlaybackUrl(path: string): string {
