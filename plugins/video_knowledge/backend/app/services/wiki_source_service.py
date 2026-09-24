@@ -437,11 +437,14 @@ class WikiVideoService:
             raise WikiStorageError("Wiki citation is missing or ambiguous")
         ref = matches[0]
         if (
-            page.page_type != "video"
-            or ref["media_id"] != page_id.removeprefix("video_")
+            page.page_type not in {"video", "concept", "entity", "comparison", "query"}
             or ref["source_revision"] not in frontmatter["source_refs"]
+            or (
+                page.page_type == "video"
+                and ref["media_id"] != page_id.removeprefix("video_")
+            )
         ):
-            raise WikiStorageError("Wiki citation is not attached to this video page")
+            raise WikiStorageError("Wiki citation is not attached to this page")
         citation = CitationRef.model_validate({
             "segment_ids": ref["segment_ids"],
             "start_ms": ref["start_ms"],

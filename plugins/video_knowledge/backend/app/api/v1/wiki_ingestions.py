@@ -161,6 +161,15 @@ async def submit_backfill(
     return await _service(request, database).submit_backfill(payload.media_ids)
 
 
+@router.post("/fusion/backfill")
+async def submit_fusion_backfill(
+    payload: BackfillSelection,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    return await _service(request, database).backfill_fusion(payload.media_ids)
+
+
 @router.post("/backfill/{batch_id}/cancel")
 async def cancel_backfill(
     batch_id: str,

@@ -561,6 +561,11 @@ class WikiIngestion(Base):
     batch_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_revision: Mapped[str | None] = mapped_column(String(68), nullable=True)
     commit_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fusion_job_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("jobs.id"), nullable=True
+    )
+    fusion_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fusion_commit_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     needs_review: Mapped[bool] = mapped_column(default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

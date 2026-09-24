@@ -69,6 +69,9 @@ export interface WikiIngestion {
   job_id: string
   status: JobStatus
   wiki_status: string
+  fusion_status: string
+  fusion_job_id: null | string
+  fusion_commit_id: null | string
   needs_review: boolean
   source_revision: null | string
   commit_id: null | string

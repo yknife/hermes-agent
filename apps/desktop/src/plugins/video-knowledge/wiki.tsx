@@ -26,6 +26,7 @@ import {
   resolveWikiCitation,
   searchWiki,
   submitWikiBackfill,
+  submitWikiFusionBackfill,
   submitWikiMedia,
   updateWikiSettings
 } from './api'
@@ -40,6 +41,9 @@ const STATUS: Record<string, string> = {
   NEW: '新增',
   NO_ANALYSIS: '无分析',
   PENDING: '待入库',
+  RUNNING: '处理中',
+  SUCCEEDED: '已完成',
+  REVIEW_REQUIRED: '待复核',
   PROCESSING: '处理中',
   REVIEW: '待复核',
   SYNCED: '已同步',
@@ -48,6 +52,15 @@ const STATUS: Record<string, string> = {
 
 function statusText(status?: string) {
   return status ? (STATUS[status] ?? status) : '未入库'
+}
+
+function fusionStatusText(status: string) {
+  const labels: Record<string, string> = {
+    PENDING: '待融合', RUNNING: '融合中', SUCCEEDED: '已完成',
+    FAILED: '失败', CANCELLED: '已取消', REVIEW_REQUIRED: '待复核'
+  }
+
+  return labels[status] ?? status
 }
 
 function latestForMedia(items: WikiIngestion[] | undefined, mediaId: string) {
@@ -83,12 +96,19 @@ export function WikiMediaStatus({ mediaId, onOpenWiki }: { mediaId: string; onOp
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
   })
 
+  const fuse = useMutation({
+    mutationFn: () => submitWikiFusionBackfill([mediaId]),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+  })
+
   return (
     <section className="rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3 text-xs">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <Codicon name="book" />
           知识库 <Badge variant="outline">{statusText(current?.wiki_status ?? (hasPage ? 'SYNCED' : undefined))}</Badge>
+          {current?.source_revision && <Badge variant="outline">来源已入库</Badge>}
+          {current?.source_revision && <Badge variant="outline">知识融合：{fusionStatusText(current.fusion_status)}</Badge>}
         </div>
         <div className="flex flex-wrap gap-2">
           {hasPage && (
@@ -105,10 +125,15 @@ export function WikiMediaStatus({ mediaId, onOpenWiki }: { mediaId: string; onOp
               手动入库
             </Button>
           ) : null}
+          {current?.source_revision && ['FAILED', 'CANCELLED', 'PENDING'].includes(current.fusion_status) && (
+            <Button disabled={fuse.isPending} onClick={() => fuse.mutate()} size="xs" variant="secondary">
+              {current.fusion_status === 'PENDING' ? '融合知识' : '重试融合'}
+            </Button>
+          )}
         </div>
       </div>
-      {(sync.error || retry.error) && (
-        <p className="mt-2 text-destructive">{errorMessage(sync.error ?? retry.error)}</p>
+      {(sync.error || retry.error || fuse.error) && (
+        <p className="mt-2 text-destructive">{errorMessage(sync.error ?? retry.error ?? fuse.error)}</p>
       )}
       {current?.error_code && <p className="mt-2 text-destructive">错误码：{current.error_code}</p>}
     </section>
@@ -187,6 +212,14 @@ export function WikiView({
     }
   })
 
+  const fusionBackfill = useMutation({
+    mutationFn: () => submitWikiFusionBackfill(),
+    onSuccess: result => {
+      setNotice(`已提交或保留 ${result.job_ids.length} 个知识融合任务`)
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+    }
+  })
+
   const cancelAction = useMutation({
     mutationFn: () => cancelWikiBackfill(batchId!),
     onSuccess: result => {
@@ -231,6 +264,7 @@ export function WikiView({
     settingChange.error ??
     previewAction.error ??
     backfillAction.error ??
+    fusionBackfill.error ??
     cancelAction.error ??
     rebuildAction.error ??
     syncAction.error ??
@@ -262,6 +296,9 @@ export function WikiView({
       <div className="flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) px-5 py-2 text-xs">
         <Button disabled={previewAction.isPending} onClick={() => previewAction.mutate()} size="xs" variant="secondary">
           预览历史补录
+        </Button>
+        <Button disabled={fusionBackfill.isPending} onClick={() => fusionBackfill.mutate()} size="xs" variant="secondary">
+          补做知识融合
         </Button>
         {preview && (
           <>
@@ -408,6 +445,7 @@ export function WikiView({
                     <Badge variant="outline">{page.data.type}</Badge>
                     <Badge variant="outline">修订 {page.data.revision}</Badge>
                     {currentIngestion && <Badge variant="outline">{statusText(currentIngestion.wiki_status)}</Badge>}
+                    {currentIngestion?.source_revision && <Badge variant="outline">知识融合：{fusionStatusText(currentIngestion.fusion_status)}</Badge>}
                   </div>
                   {page.data.tags.length > 0 && (
                     <p className="mt-2 text-xs text-muted-foreground">标签：{page.data.tags.join(' · ')}</p>

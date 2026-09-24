@@ -207,6 +207,60 @@ class WikiIngestionService:
                         raise
         return request
 
+    async def enqueue_fusion(self, ingestion_id: str) -> str | None:
+        """Queue or retry the lower-priority fusion for a committed source."""
+        async with self.database.session() as session, session.begin():
+            request = await session.get(WikiIngestion, ingestion_id)
+            if request is None or request.source_revision is None:
+                raise ValueError("Wiki source must be committed before fusion")
+            if request.needs_review:
+                return None
+            await session.execute(
+                update(WikiCatalog)
+                .where(WikiCatalog.id == request.wiki_id)
+                .values(revision=WikiCatalog.revision)
+            )
+            if request.fusion_job_id is None:
+                job = await self.jobs.create(
+                    job_type=JobType.WIKI_FUSE,
+                    priority=250,
+                    max_attempts=3,
+                    input_data={"ingestion_id": request.id},
+                    media_id=request.media_id,
+                    parent_job_id=request.job_id,
+                    actor="wiki:fusion",
+                    session=session,
+                )
+                request.fusion_job_id = job.id
+                return job.id
+            job_id = request.fusion_job_id
+        async with self.database.session() as session:
+            job = await session.get(Job, job_id)
+        if job and job.status in {JobStatus.FAILED.value, JobStatus.CANCELLED.value}:
+            await self.jobs.retry(job_id, actor="wiki:fusion_retry")
+        return job_id
+
+    async def backfill_fusion(self, media_ids: list[str] | None = None) -> dict:
+        async with self.database.session() as session:
+            statement = select(WikiIngestion.id).where(
+                WikiIngestion.source_revision.is_not(None)
+            )
+            if media_ids is not None:
+                statement = statement.where(
+                    WikiIngestion.media_id.in_(media_ids[:1000])
+                )
+            ids = (
+                await session.scalars(
+                    statement.order_by(WikiIngestion.created_at).limit(1000)
+                )
+            ).all()
+        jobs = []
+        for ingestion_id in ids:
+            job_id = await self.enqueue_fusion(ingestion_id)
+            if job_id:
+                jobs.append(job_id)
+        return {"job_ids": jobs}
+
     async def preview(self, media_ids: list[str] | None = None) -> list[dict]:
         async with self.database.session() as session:
             statement = (
@@ -313,6 +367,15 @@ class WikiIngestionService:
                     "commit_id": row.commit_id,
                     "error_code": job.error_code if job else None,
                     "wiki_status": _status(job, row.needs_review),
+                    "fusion_status": (
+                        "REVIEW_REQUIRED"
+                        if row.needs_review
+                        else "PENDING"
+                        if row.fusion_job_id is None
+                        else (await session.get(Job, row.fusion_job_id)).status
+                    ),
+                    "fusion_job_id": row.fusion_job_id,
+                    "fusion_commit_id": row.fusion_commit_id,
                 }
                 if status is None or item["wiki_status"] == status:
                     items.append(item)

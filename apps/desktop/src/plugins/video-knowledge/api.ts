@@ -179,6 +179,10 @@ export const previewWikiBackfill = () =>
   call<WikiBackfillPreview[]>('/wiki/backfill/preview', { method: 'POST', body: {} })
 export const submitWikiBackfill = () =>
   call<{ batch_id: string; job_ids: string[] }>('/wiki/backfill', { method: 'POST', body: {} })
+export const submitWikiFusionBackfill = (mediaIds?: string[]) =>
+  call<{ job_ids: string[] }>('/wiki/fusion/backfill', {
+    method: 'POST', body: { media_ids: mediaIds ?? null }
+  })
 export const cancelWikiBackfill = (batchId: string) =>
   call<{ batch_id: string; cancelled_job_ids: string[] }>(`/wiki/backfill/${encodeURIComponent(batchId)}/cancel`, {
     method: 'POST'

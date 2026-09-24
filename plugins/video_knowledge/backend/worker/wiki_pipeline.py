@@ -12,6 +12,9 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
+from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
+    WikiIngestionService,
+)
 from plugins.video_knowledge.backend.app.services.wiki_source_service import (
     WikiVideoService,
 )
@@ -19,6 +22,7 @@ from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
     WikiConflictError,
     WikiStorageService,
 )
+from plugins.video_knowledge.backend.hermes_client.wiki_agent import WikiAgentAdapter
 from plugins.video_knowledge.backend.worker.lease import LeaseHeartbeat
 
 
@@ -85,8 +89,14 @@ class WikiPipeline:
                 )
                 current.source_revision = result.source_revision
                 current.commit_id = result.commit_id or page.commit_id
+                ingestion_id = current.id
         finally:
             await self.storage.release_lease(lease)
+        # A separate, lower-priority job keeps the committed source available
+        # even if the Skill or model is unavailable.
+        await WikiIngestionService(
+            self.database, self.storage.storage_root
+        ).enqueue_fusion(ingestion_id)
         await self.state_machine.complete(
             job.id,
             worker_id,
@@ -94,5 +104,57 @@ class WikiPipeline:
                 "source_revision": result.source_revision,
                 "page_id": result.page_id,
                 "already_ingested": result.already_ingested,
+            },
+        )
+
+
+class WikiFusionPipeline:
+    def __init__(
+        self,
+        database: Database,
+        state_machine: JobStateMachine,
+        storage: WikiStorageService,
+        adapter: WikiAgentAdapter,
+    ) -> None:
+        self.database = database
+        self.state_machine = state_machine
+        self.storage = storage
+        self.adapter = adapter
+
+    async def run(self, job: Job, worker_id: str, heartbeat: LeaseHeartbeat) -> None:
+        if heartbeat.lost.is_set():
+            raise JobLeaseLostError("Wiki fusion job lease was lost")
+        async with self.database.session() as session:
+            request = await session.scalar(
+                select(WikiIngestion).where(WikiIngestion.fusion_job_id == job.id)
+            )
+            if request is None or request.source_revision is None:
+                raise ValueError("Committed Wiki source is missing for fusion")
+            media_id, source_revision = request.media_id, request.source_revision
+        await self.state_machine.update_progress(
+            job.id,
+            worker_id,
+            stage=JobStage.INDEXING,
+            progress=max(job.progress, 10),
+            message="正在融合 Wiki 知识",
+        )
+        result = await self.adapter.run_ingest(
+            media_id, source_revision, lease_alive=lambda: not heartbeat.lost.is_set()
+        )
+        if heartbeat.lost.is_set():
+            raise JobLeaseLostError("Wiki fusion job lease was lost")
+        async with self.database.session() as session, session.begin():
+            request = await session.scalar(
+                select(WikiIngestion).where(WikiIngestion.fusion_job_id == job.id)
+            )
+            request.fusion_run_id = result.run_id
+            request.fusion_commit_id = result.commit_id
+        await self.state_machine.complete(
+            job.id,
+            worker_id,
+            result={
+                "run_id": result.run_id,
+                "commit_id": result.commit_id,
+                "page_ids": result.changed_page_ids,
             },
         )
