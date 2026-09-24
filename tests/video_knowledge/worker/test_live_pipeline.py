@@ -35,6 +35,7 @@ from plugins.video_knowledge.backend.media_adapters import (
     StreamGetAdapter,
 )
 from plugins.video_knowledge.backend.media_adapters.errors import (
+    MediaToolError,
     MediaUnavailableError,
     UnsafeUrlError,
 )
@@ -70,6 +71,16 @@ class OfflineLiveResolver(StreamGetAdapter):
     ) -> LiveStatus:
         del url, quality
         return LiveStatus(platform=platform, is_live=False)
+
+
+class EndedLiveResolver(FakeLiveResolver):
+    calls = 0
+
+    async def resolve(self, url, platform, **kwargs):
+        self.calls += 1
+        if self.calls > 1:
+            return LiveStatus(platform=platform, is_live=False)
+        return await super().resolve(url, platform, **kwargs)
 
 
 class ReconnectingRecorder(FFmpegAdapter):
@@ -172,7 +183,11 @@ async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel, ro
             machine,
             LiveSourceService(database),
             MediaService(database, tmp_path / "storage"),
-            OfflineLiveResolver() if offline else FakeLiveResolver(),
+            OfflineLiveResolver()
+            if offline
+            else EndedLiveResolver()
+            if short
+            else FakeLiveResolver(),
             recorder,
             LiveInspector() if short else HourlyInspector(),
             tmp_path / "storage",
@@ -186,6 +201,7 @@ async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel, ro
             assert payload["recording_max_seconds"] == 3600
             assert payload["recording_remaining_seconds"] == 10800 - (part - 1) * 3600
             heartbeat = LeaseHeartbeat(machine, job.id, "worker", 60)
+            job.input_json = json.dumps({**payload, "reconnect_delay_seconds": 0})
             if offline:
                 with pytest.raises(MediaUnavailableError, match="未开播"):
                     await pipeline.run(job, "worker", heartbeat)
@@ -241,6 +257,99 @@ async def test_feishu_live_hourly_workflows(tmp_path, offline, short, cancel, ro
                     )
                     assert len(notifications) == 1
                     assert notifications[0].workflow_id == child.workflow_id
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "disruption", ["clean_eof", "offline_once", "probe_error", "exhausted"]
+)
+async def test_early_clean_eof_does_not_stop_live_chain(tmp_path, disruption):
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'early-eof.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    class Resolver(FakeLiveResolver):
+        calls = 0
+
+        async def resolve(self, url, platform, **kwargs):
+            self.calls += 1
+            if self.calls == 2 and disruption == "offline_once":
+                return LiveStatus(platform=platform, is_live=False)
+            if self.calls == 2 and disruption == "probe_error":
+                raise MediaToolError("temporary probe failure")
+            return await super().resolve(url, platform, **kwargs)
+
+    class Recorder(ReconnectingRecorder):
+        limits = []
+
+        async def record_live(
+            self, stream_url, target, *, max_seconds, on_progress=None
+        ):
+            self.limits.append(max_seconds)
+            await super().record_live(
+                stream_url, target, max_seconds=max_seconds, on_progress=on_progress
+            )
+            return LiveRecordingResult(target, interrupted=False)
+
+    class Inspector(LiveInspector):
+        async def inspect(self, path):
+            value = await super().inspect(path)
+            duration = 2896 if path.name == "segment-0001.part.mkv" else 704
+            if path.name == "recording.mkv":
+                duration = 2896 if disruption == "exhausted" else 3600
+            return MediaFileInfo(
+                duration, value.container, value.codec, value.mime_type, {}
+            )
+
+    try:
+        service = CollectionService(
+            database,
+            Settings(
+                _env_file=None,
+                storage_root=tmp_path,
+                messaging_ingest_enabled=True,
+            ),
+        )
+        await service.collect(
+            "https://live.bilibili.com/123",
+            CollectionOrigin("feishu", "user", "chat", "message", "session"),
+        )
+        machine = JobStateMachine(database)
+        job = await machine.claim_next("worker", 60)
+        job.input_json = json.dumps({
+            **json.loads(job.input_json),
+            "reconnect_delay_seconds": 0,
+            "reconnect_attempts": 0 if disruption == "exhausted" else 3,
+        })
+        recorder = Recorder()
+        await LiveRecordingPipeline(
+            machine,
+            LiveSourceService(database),
+            MediaService(database, tmp_path),
+            Resolver(),
+            recorder,
+            Inspector(),
+            tmp_path,
+            MessagingUrlGuard(resolver=lambda *_: ["8.8.8.8"]),
+        ).run(job, "worker", LeaseHeartbeat(machine, job.id, "worker", 60))
+        assert recorder.limits == ([3600] if disruption == "exhausted" else [3600, 704])
+        async with database.session() as session:
+            saved = await session.get(Job, job.id)
+            assert saved.status == "SUCCEEDED"
+            recordings = list(
+                (
+                    await session.scalars(
+                        select(Job).where(
+                            Job.type == "RECORD_LIVE",
+                            Job.parent_job_id == job.id,
+                        )
+                    )
+                ).all()
+            )
+            assert len(recordings) == 1
+            assert json.loads(recordings[0].input_json)["recording_part"] == 2
     finally:
         await database.dispose()
 

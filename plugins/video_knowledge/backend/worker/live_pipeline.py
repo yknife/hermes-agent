@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -191,24 +192,38 @@ class LiveRecordingPipeline:
         )
         last_reported_second = int(recorded_seconds)
         last_error: Exception | None = None
+        offline_checks = 0
 
         if recorded_seconds < max_seconds:
             for offset in range(reconnect_attempts + 1):
                 self._assert_lease(heartbeat)
                 if offset > 0:
                     await asyncio.sleep(reconnect_delay)
-                    refreshed = await self.resolver.resolve(
-                        live_url,
-                        source.platform,
-                        quality=quality,
-                        **(
-                            {"cookies_file": Path(str(payload["cookies_file"]))}
-                            if payload.get("cookies_file")
-                            else {}
-                        ),
-                    )
-                    if not refreshed.is_live or not refreshed.streams:
+                    if await self._cancel_requested(job.id, worker_id, heartbeat):
                         break
+                    try:
+                        refreshed = await self.resolver.resolve(
+                            live_url,
+                            source.platform,
+                            quality=quality,
+                            **(
+                                {"cookies_file": Path(str(payload["cookies_file"]))}
+                                if payload.get("cookies_file")
+                                else {}
+                            ),
+                        )
+                    except MediaToolError as exc:
+                        last_error = exc
+                        offline_checks = 0
+                        continue
+                    if not refreshed.is_live:
+                        offline_checks += 1
+                        if offline_checks >= 2:
+                            break
+                        continue
+                    offline_checks = 0
+                    if not refreshed.streams:
+                        continue
                     stream = refreshed.streams[0]
                 target = temp_dir / f"segment-{len(segments) + 1:04d}.part.mkv"
                 segment_offset = recorded_seconds
@@ -284,8 +299,17 @@ class LiveRecordingPipeline:
                     segments.append((recording.path, info))
                     recorded_seconds += info.duration_seconds
                     last_error = None
-                    if not recording.interrupted or offset >= reconnect_attempts:
+                    # A clean FFmpeg EOF only means that this stream ended. CDN
+                    # disconnects can return code 0 while the room is still live.
+                    if recorded_seconds >= max_seconds - 2:
                         break
+                    await self.state_machine.update_progress(
+                        job.id,
+                        worker_id,
+                        stage=JobStage.RECORDING,
+                        progress=reported_progress,
+                        message="直播流提前结束，正在重新检测并尝试续录",
+                    )
                 except MediaToolError as exc:
                     last_error = exc
                     segments = await self._load_segments(temp_dir)
@@ -313,6 +337,7 @@ class LiveRecordingPipeline:
             segments,
             payload,
             current_progress=reported_progress,
+            continue_recording=offline_checks < 2,
         )
 
     async def _load_segments(self, temp_dir: Path) -> list[tuple[Path, MediaFileInfo]]:
@@ -338,6 +363,7 @@ class LiveRecordingPipeline:
         payload: dict[str, object],
         *,
         current_progress: float | None = None,
+        continue_recording: bool = False,
     ) -> None:
         await self.state_machine.update_progress(
             job.id,
@@ -368,10 +394,12 @@ class LiveRecordingPipeline:
             segment_limit = int(payload.get("recording_max_seconds", 3600))
             budget = int(payload.get("recording_remaining_seconds", segment_limit))
             unlimited = budget == 0
-            remaining = 0 if unlimited else budget - segment_limit
-            if (
-                unlimited or remaining > 0
-            ) and final_info.duration_seconds >= segment_limit - 2:
+            remaining = (
+                0 if unlimited else budget - math.ceil(final_info.duration_seconds)
+            )
+            if (unlimited or remaining > 0) and (
+                continue_recording or final_info.duration_seconds >= segment_limit - 2
+            ):
                 await self.state_machine.queue_live_continuation(
                     job,
                     worker_id,
