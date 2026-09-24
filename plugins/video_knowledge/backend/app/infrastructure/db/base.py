@@ -525,3 +525,50 @@ class JobEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class WikiCatalog(Base):
+    __tablename__ = "wiki_catalogs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    relative_root: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    commit_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fencing_token: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class WikiCommit(Base):
+    __tablename__ = "wiki_commits"
+    __table_args__ = (
+        Index("ix_wiki_commits_status", "wiki_id", "status"),
+        UniqueConstraint("wiki_id", "base_revision", name="uq_wiki_commit_base"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    wiki_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    manifest_json: Mapped[str] = mapped_column(Text, nullable=False)
+    fencing_token: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WikiPageProjection(Base):
+    __tablename__ = "wiki_page_projections"
+    __table_args__ = (
+        UniqueConstraint("wiki_id", "relative_path", name="uq_wiki_page_path"),
+    )
+
+    wiki_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    page_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    page_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    commit_id: Mapped[str] = mapped_column(String(64), nullable=False)
