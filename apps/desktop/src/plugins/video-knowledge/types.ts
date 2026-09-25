@@ -85,6 +85,28 @@ export interface WikiBackfillPreview {
   can_submit?: boolean
 }
 
+export interface WikiAnswerCitation extends WikiCitationRef {
+  page_id: string
+  page_revision: number
+}
+
+export interface WikiAnswer {
+  run_id: string
+  wiki_id: string
+  question: string
+  answer: string
+  insufficient_evidence: boolean
+  citations: WikiAnswerCitation[]
+  skill_sha256: string
+}
+
+export interface WikiSavedAnswer {
+  page_id: string
+  revision: number
+  commit_id: string
+  unchanged: boolean
+}
+
 export interface Health {
   status: 'ok' | 'degraded'
   components: Record<string, { detail?: null | string; status: string }>

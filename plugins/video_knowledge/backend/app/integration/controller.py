@@ -51,6 +51,11 @@ from plugins.video_knowledge.backend.app.schemas.transcripts import (
     TranscriptSearchResult,
     TranscriptSegmentRead,
 )
+from plugins.video_knowledge.backend.app.schemas.wiki import (
+    AutoIngestSetting,
+    BackfillSelection,
+    WikiQuestionRequest,
+)
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
 from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
     CookieSettingsService,
@@ -79,6 +84,19 @@ from plugins.video_knowledge.backend.app.services.runtime_service import (
 from plugins.video_knowledge.backend.app.services.transcript_service import (
     TranscriptService,
 )
+from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
+    WikiIngestionService,
+)
+from plugins.video_knowledge.backend.app.services.wiki_query_service import (
+    WikiQueryService,
+)
+from plugins.video_knowledge.backend.app.services.wiki_read_service import (
+    WikiReadService,
+)
+from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
+    WikiStorageError,
+)
+from plugins.video_knowledge.backend.hermes_client.wiki_agent import WikiAgentError
 from plugins.video_knowledge.backend.media_adapters import (
     LiveStatus,
     StreamGetAdapter,
@@ -151,6 +169,10 @@ class VideoKnowledgeController:
         ):
             raise StorageMigrationConflictError(
                 "媒体资产正在迁移，暂时不能创建或修改任务"
+            )
+        if parts and parts[0] == "wiki":
+            return await self._dispatch_wiki(
+                database, method, parts[1:], query, payload
             )
         if method == "PUT" and parts == ["system", "asr"]:
             service = ASRSettingsService(database, self.runtime.settings)
@@ -481,6 +503,138 @@ class VideoKnowledgeController:
                 "error": {
                     "code": "NOT_FOUND",
                     "message": "Video Knowledge route not found",
+                }
+            },
+            404,
+        )
+
+    async def _dispatch_wiki(
+        self,
+        database: Database,
+        method: str,
+        parts: list[str],
+        query: Mapping[str, str],
+        payload: Mapping[str, Any],
+    ) -> ControllerResponse:
+        storage_root = self.runtime.settings.storage_root
+        reader = WikiReadService(database, storage_root)
+        service = WikiIngestionService(database, storage_root)
+        query_service = WikiQueryService(database, storage_root)
+        if method == "POST" and parts == ["query"]:
+            request = WikiQuestionRequest.model_validate(payload)
+            try:
+                return self._json(await query_service.ask(request.question))
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+            except WikiAgentError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "WIKI_QUERY_FAILED", "message": str(exc)}}, 503
+                )
+        if (
+            method == "POST"
+            and len(parts) == 3
+            and parts[0] == "query"
+            and parts[2] == "save"
+        ):
+            try:
+                return self._json(await query_service.save(parts[1]))
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+        if method == "GET" and parts == ["pages"]:
+            return self._json(
+                await reader.catalog(query.get("page_type"), query.get("tag"))
+            )
+        if method == "GET" and len(parts) == 2 and parts[0] == "pages":
+            page = await reader.page(parts[1])
+            return self._json(page) if page is not None else self._wiki_missing("page")
+        if (
+            method == "GET"
+            and len(parts) == 4
+            and parts[0] == "pages"
+            and parts[2] == "citations"
+        ):
+            try:
+                return self._json(await reader.citation(parts[1], parts[3]))
+            except (WikiStorageError, FileNotFoundError):
+                return self._wiki_missing("citation")
+        if method == "GET" and len(parts) == 3 and parts[0] == "sources":
+            try:
+                return self._json(reader.source(parts[1], parts[2]))
+            except (WikiStorageError, FileNotFoundError):
+                return self._wiki_missing("source")
+        if method == "GET" and parts == ["search"]:
+            phrase = query.get("q", "")
+            if len(phrase) > 200:
+                return ControllerResponse(
+                    {
+                        "error": {
+                            "code": "VALIDATION_ERROR",
+                            "message": "Search query is too long",
+                        }
+                    },
+                    422,
+                )
+            return self._json(
+                await reader.search(phrase, query.get("page_type"), query.get("tag"))
+            )
+        if method == "POST" and parts == ["search", "rebuild"]:
+            return self._json(await reader.rebuild())
+        if method == "GET" and parts == ["settings"]:
+            return self._json(await service.settings())
+        if method == "PUT" and parts == ["settings"]:
+            request = AutoIngestSetting.model_validate(payload)
+            return self._json(await service.set_auto_ingest(request.auto_ingest))
+        if method == "GET" and parts == ["ingestions"]:
+            return self._json(
+                await service.list_ingestions(
+                    query.get("media_id"), query.get("status")
+                )
+            )
+        if (
+            method == "POST"
+            and len(parts) == 3
+            and parts[0] == "media"
+            and parts[2] == "ingest"
+        ):
+            try:
+                ingestion = await service.enqueue(parts[1])
+            except ValueError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+            return self._json({
+                "ingestion_id": ingestion.id,
+                "job_id": ingestion.job_id,
+            })
+        if method == "POST" and parts == ["backfill", "preview"]:
+            request = BackfillSelection.model_validate(payload)
+            return self._json(await service.preview(request.media_ids))
+        if method == "POST" and parts == ["backfill"]:
+            request = BackfillSelection.model_validate(payload)
+            return self._json(await service.submit_backfill(request.media_ids))
+        if method == "POST" and parts == ["fusion", "backfill"]:
+            request = BackfillSelection.model_validate(payload)
+            return self._json(await service.backfill_fusion(request.media_ids))
+        if (
+            method == "POST"
+            and len(parts) == 3
+            and parts[0] == "backfill"
+            and parts[2] == "cancel"
+        ):
+            return self._json(await service.cancel_backfill(parts[1]))
+        return self._wiki_missing("route")
+
+    @staticmethod
+    def _wiki_missing(resource: str) -> ControllerResponse:
+        return ControllerResponse(
+            {
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": f"Wiki {resource} is unavailable",
                 }
             },
             404,

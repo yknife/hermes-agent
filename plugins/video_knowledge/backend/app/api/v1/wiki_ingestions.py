@@ -3,12 +3,19 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field
 
 from plugins.video_knowledge.backend.app.api.deps import get_database
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.schemas.wiki import (
+    AutoIngestSetting,
+    BackfillSelection,
+    WikiQuestionRequest,
+)
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
     WikiIngestionService,
+)
+from plugins.video_knowledge.backend.app.services.wiki_query_service import (
+    WikiQueryService,
 )
 from plugins.video_knowledge.backend.app.services.wiki_read_service import (
     WikiReadService,
@@ -16,16 +23,9 @@ from plugins.video_knowledge.backend.app.services.wiki_read_service import (
 from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
     WikiStorageError,
 )
+from plugins.video_knowledge.backend.hermes_client.wiki_agent import WikiAgentError
 
 router = APIRouter(prefix="/wiki", tags=["wiki"])
-
-
-class AutoIngestSetting(BaseModel):
-    auto_ingest: bool
-
-
-class BackfillSelection(BaseModel):
-    media_ids: list[str] | None = Field(default=None, max_length=1000)
 
 
 def _service(request: Request, database: Database) -> WikiIngestionService:
@@ -34,6 +34,36 @@ def _service(request: Request, database: Database) -> WikiIngestionService:
 
 def _reader(request: Request, database: Database) -> WikiReadService:
     return WikiReadService(database, request.app.state.settings.storage_root)
+
+
+def _query_service(request: Request, database: Database) -> WikiQueryService:
+    return WikiQueryService(database, request.app.state.settings.storage_root)
+
+
+@router.post("/query")
+async def answer_question(
+    payload: WikiQuestionRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    try:
+        return await _query_service(request, database).ask(payload.question)
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except WikiAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.post("/query/{run_id}/save")
+async def save_answer(
+    run_id: str,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    try:
+        return await _query_service(request, database).save(run_id)
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/pages")

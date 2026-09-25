@@ -14,7 +14,11 @@ from plugins.video_knowledge.backend.app.integration.runtime import (
     _prune_expired_database_backups,
 )
 from plugins.video_knowledge.backend.app.schemas.system import RuntimeStatusResponse
+from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.backend.app.services.media_service import MediaService
+from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
+    WikiStorageService,
+)
 from plugins.video_knowledge.backend.media_adapters.models import (
     DownloadResult,
     LiveStatus,
@@ -22,6 +26,134 @@ from plugins.video_knowledge.backend.media_adapters.models import (
     MediaProbe,
     SubtitleTrack,
 )
+from plugins.video_knowledge.backend.worker.wiki_pipeline import WikiPipeline
+from tests.video_knowledge.wiki.test_video_sources import SAMPLES, seed
+
+
+@pytest.mark.asyncio
+async def test_desktop_controller_exposes_wiki_query_and_save(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = ManagedVideoKnowledgeRuntime(
+        Settings(
+            _env_file=None,
+            database_url=f"sqlite+aiosqlite:///{tmp_path / 'profile' / 'app.db'}",
+            storage_root=tmp_path / "profile" / "storage",
+        ),
+        start_worker=False,
+    )
+
+    async def answer(_service, question: str) -> dict:
+        return {"run_id": "wq_test", "question": question}
+
+    async def save(_service, run_id: str) -> dict:
+        return {"page_id": "query_test", "run_id": run_id}
+
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.app.services.wiki_query_service.WikiQueryService.ask",
+        answer,
+    )
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.app.services.wiki_query_service.WikiQueryService.save",
+        save,
+    )
+    controller = VideoKnowledgeController(runtime)
+    try:
+        queried = await controller.dispatch(
+            "POST", "/wiki/query", payload={"question": "索引如何更新？"}
+        )
+        saved = await controller.dispatch("POST", "/wiki/query/wq_test/save")
+        assert queried.status == 200
+        assert queried.body["question"] == "索引如何更新？"
+        assert saved.status == 200
+        assert saved.body == {"page_id": "query_test", "run_id": "wq_test"}
+    finally:
+        await runtime.stop()
+
+
+@pytest.mark.asyncio
+async def test_desktop_controller_routes_wiki_manual_ingestion_and_reading(
+    tmp_path: Path,
+) -> None:
+    runtime = ManagedVideoKnowledgeRuntime(
+        Settings(
+            _env_file=None,
+            database_url=f"sqlite+aiosqlite:///{tmp_path / 'profile' / 'app.db'}",
+            storage_root=tmp_path / "profile" / "storage",
+        ),
+        start_worker=False,
+    )
+    controller = VideoKnowledgeController(runtime)
+    try:
+        database, _client = await runtime.resources()
+        await seed(database, "A")
+        media_id = SAMPLES["A"]["media_id"]
+
+        settings = await controller.dispatch("GET", "/wiki/settings")
+        preview = await controller.dispatch(
+            "POST", "/wiki/backfill/preview", payload={}
+        )
+        submitted = await controller.dispatch("POST", f"/wiki/media/{media_id}/ingest")
+        repeated = await controller.dispatch("POST", f"/wiki/media/{media_id}/ingest")
+        ingestions = await controller.dispatch(
+            "GET", "/wiki/ingestions", query={"media_id": media_id}
+        )
+
+        assert settings.body["auto_ingest"] is False
+        assert preview.body[0]["status"] == "NEW"
+        assert submitted.status == 200
+        assert submitted.body == repeated.body
+        assert ingestions.body[0]["job_id"] == submitted.body["job_id"]
+
+        jobs = JobStateMachine(database)
+        job = await jobs.claim_next("controller-test", 30)
+        storage = WikiStorageService(database, runtime.settings.storage_root)
+        await WikiPipeline(database, jobs, storage).run(
+            job, "controller-test", type("Heartbeat", (), {"lost": asyncio.Event()})()
+        )
+        catalog = await controller.dispatch("GET", "/wiki/pages")
+        page_id = catalog.body["items"][0]["page_id"]
+        page = await controller.dispatch("GET", f"/wiki/pages/{page_id}")
+        source_revision = (
+            await controller.dispatch(
+                "GET", "/wiki/ingestions", query={"media_id": media_id}
+            )
+        ).body[0]["source_revision"]
+        source = await controller.dispatch(
+            "GET", f"/wiki/sources/{media_id}/{source_revision}"
+        )
+        citation = await controller.dispatch(
+            "GET", f"/wiki/pages/{page_id}/citations/章节-1"
+        )
+        search = await controller.dispatch(
+            "GET", "/wiki/search", query={"q": "重建索引"}
+        )
+        rebuilt = await controller.dispatch("POST", "/wiki/search/rebuild")
+        backfill = await controller.dispatch("POST", "/wiki/backfill", payload={})
+        cancelled = await controller.dispatch(
+            "POST", f"/wiki/backfill/{backfill.body['batch_id']}/cancel"
+        )
+        fusion = await controller.dispatch(
+            "POST", "/wiki/fusion/backfill", payload={"media_ids": [media_id]}
+        )
+        updated_settings = await controller.dispatch(
+            "PUT", "/wiki/settings", payload={"auto_ingest": True}
+        )
+        missing = await controller.dispatch("GET", "/wiki/pages/missing")
+
+        assert catalog.body["initialized"] is True
+        assert page.body["page_id"] == page_id
+        assert source.body["media_id"] == media_id
+        assert citation.body["media_id"] == media_id
+        assert rebuilt.body["count"] == 1
+        assert search.body["initialized"] is True
+        assert backfill.body["job_ids"] == []
+        assert cancelled.body["cancelled_job_ids"] == []
+        assert len(fusion.body["job_ids"]) == 1
+        assert updated_settings.body["auto_ingest"] is True
+        assert missing.status == 404
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.asyncio

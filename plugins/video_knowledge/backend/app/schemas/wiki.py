@@ -2,6 +2,20 @@
 
 from dataclasses import dataclass
 
+from pydantic import BaseModel, Field
+
+
+class AutoIngestSetting(BaseModel):
+    auto_ingest: bool
+
+
+class BackfillSelection(BaseModel):
+    media_ids: list[str] | None = Field(default=None, max_length=1000)
+
+
+class WikiQuestionRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=500)
+
 
 @dataclass(frozen=True)
 class WikiPage:

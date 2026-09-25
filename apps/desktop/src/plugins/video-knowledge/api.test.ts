@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   analyze,
+  askWiki,
   bindApi,
   deleteMedia,
   fetchCookieSettings,
@@ -13,6 +14,7 @@ import {
   mediaThumbnailUrl,
   migrateStorage,
   probeSource,
+  saveWikiAnswer,
   updateCookieSettings
 } from './api'
 import type { IngestOptions, LocalIngestOptions } from './types'
@@ -24,6 +26,25 @@ afterEach(() => {
 })
 
 describe('video knowledge plugin API', () => {
+  it('separates read-only Wiki questions from explicit save requests', async () => {
+    const rest = vi.fn().mockResolvedValue({})
+
+    dispose.push(bindApi(rest))
+    await askWiki('A 和 B 的观点？')
+    expect(rest).toHaveBeenCalledWith('/wiki/query', {
+      body: { question: 'A 和 B 的观点？' },
+      method: 'POST',
+      timeoutMs: 180_000
+    })
+    expect(rest).toHaveBeenCalledTimes(1)
+
+    await saveWikiAnswer('wq_abc')
+    expect(rest).toHaveBeenLastCalledWith('/wiki/query/wq_abc/save', {
+      method: 'POST',
+      timeoutMs: 30_000
+    })
+  })
+
   it('subscribes to the persisted event stream when the host provides sockets', () => {
     const rest = vi.fn().mockResolvedValue({})
     const stop = vi.fn()
