@@ -30,12 +30,16 @@ import type {
   WikiBackfillPreview,
   WikiCatalog,
   WikiCitationTarget,
+  WikiDiff,
   WikiIngestion,
   WikiPage,
+  WikiRevision,
   WikiSavedAnswer,
   WikiSearchResult,
+  WikiSemanticLint,
   WikiSettings,
-  WikiSourceSnapshot
+  WikiSourceSnapshot,
+  WikiStructureLint
 } from './types'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
@@ -45,13 +49,36 @@ let rest: null | Rest = null
 export function bindApi(value: Rest, socket?: Socket): () => void {
   rest = value
 
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null
+  let refreshAll = false
+
+  const flushRefresh = (): void => {
+    refreshTimer = null
+
+    if (refreshAll) {
+      refreshAll = false
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge'] })
+
+      return
+    }
+
+    // Progress can arrive many times per second. Only task views need it;
+    // refetching the whole media and Wiki library for every event can exhaust
+    // the backend's SQLite connection pool during an import.
+    void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'jobs'] })
+    void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'job-events'] })
+  }
+
   const stopEvents = socket?.('/events', data => {
     if (typeof data === 'object' && data !== null && 'type' in data && data.type !== 'system.heartbeat') {
-      void queryClient.invalidateQueries({ queryKey: ['video-knowledge'] })
+      if (data.type !== 'job.progress') {refreshAll = true}
+
+      if (refreshTimer === null) {refreshTimer = setTimeout(flushRefresh, 750)}
     }
   })
 
   return () => {
+    if (refreshTimer !== null) {clearTimeout(refreshTimer)}
     stopEvents?.()
     rest = null
   }
@@ -173,6 +200,36 @@ export const askWiki = (question: string) =>
   call<WikiAnswer>('/wiki/query', { method: 'POST', body: { question }, timeoutMs: 180_000 })
 export const saveWikiAnswer = (runId: string) =>
   call<WikiSavedAnswer>(`/wiki/query/${encodeURIComponent(runId)}/save`, { method: 'POST', timeoutMs: 30_000 })
+export const lintWikiStructure = () => call<WikiStructureLint>('/wiki/lint/structure')
+export const lintWikiSemantics = (focus = 'all pages') =>
+  call<WikiSemanticLint>('/wiki/lint/semantic', { method: 'POST', body: { focus }, timeoutMs: 180_000 })
+export const fetchWikiHistory = (pageId: string) =>
+  call<WikiRevision[]>(`/wiki/pages/${encodeURIComponent(pageId)}/history`)
+export const fetchWikiDiff = (pageId: string, revision?: number) =>
+  call<WikiDiff>(`/wiki/pages/${encodeURIComponent(pageId)}/diff${revision ? `?revision=${revision}` : ''}`)
+export const rollbackWikiPage = (pageId: string, revision: number) =>
+  call<{ commit_id: string; revision: number }>(`/wiki/pages/${encodeURIComponent(pageId)}/rollback`, {
+    method: 'POST', body: { revision }
+  })
+export const repairWikiLinks = (pageId: string) =>
+  call<{ page_id: string; repaired: number; commit_id?: string }>(
+    `/wiki/pages/${encodeURIComponent(pageId)}/repair-links`, { method: 'POST' }
+  )
+export const applyWikiReview = (pageId: string, expectedRevision: number, body: string, lintRunId: string) =>
+  call<{ page_id: string; revision: number; commit_id: string }>(
+    `/wiki/pages/${encodeURIComponent(pageId)}/review`, {
+      method: 'POST', body: { expected_revision: expectedRevision, body, lint_run_id: lintRunId }
+    }
+  )
+export const repairWikiIndex = () =>
+  call<{ commit_id: string; wiki_revision: number }>('/wiki/maintenance/index/repair', { method: 'POST' })
+export const previewWikiSchema = () =>
+  call<{ schema_sha256: string; schema_version: number; affected_page_ids: string[]; outdated_page_ids: string[]; count: number }>('/wiki/maintenance/schema/preview')
+export const withdrawWikiSource = (mediaId: string, revision: string, reason: string) =>
+  call<{ commit_id: string; affected_page_ids: string[] }>(
+    `/wiki/sources/${encodeURIComponent(mediaId)}/${encodeURIComponent(revision)}/withdraw`,
+    { method: 'POST', body: { reason } }
+  )
 export const updateWikiSettings = (autoIngest: boolean) =>
   call<WikiSettings>('/wiki/settings', { method: 'PUT', body: { auto_ingest: autoIngest } })
 export const fetchWikiIngestions = (mediaId?: string) =>
@@ -187,6 +244,10 @@ export const submitWikiBackfill = () =>
   call<{ batch_id: string; job_ids: string[] }>('/wiki/backfill', { method: 'POST', body: {} })
 export const submitWikiFusionBackfill = (mediaIds?: string[]) =>
   call<{ job_ids: string[] }>('/wiki/fusion/backfill', {
+    method: 'POST', body: { media_ids: mediaIds ?? null }
+  })
+export const recompileWikiFusion = (mediaIds?: string[]) =>
+  call<{ job_ids: string[] }>('/wiki/fusion/recompile', {
     method: 'POST', body: { media_ids: mediaIds ?? null }
   })
 export const cancelWikiBackfill = (batchId: string) =>

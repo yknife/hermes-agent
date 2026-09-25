@@ -1,7 +1,9 @@
+import { queryClient } from '@hermes/plugin-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   analyze,
+  applyWikiReview,
   askWiki,
   bindApi,
   deleteMedia,
@@ -10,12 +12,16 @@ import {
   fetchStorageSettings,
   ingest,
   ingestLocal,
+  lintWikiSemantics,
+  lintWikiStructure,
   mediaPlaybackUrl,
   mediaThumbnailUrl,
   migrateStorage,
   probeSource,
+  recompileWikiFusion,
   saveWikiAnswer,
-  updateCookieSettings
+  updateCookieSettings,
+  withdrawWikiSource
 } from './api'
 import type { IngestOptions, LocalIngestOptions } from './types'
 
@@ -23,9 +29,37 @@ const dispose: Array<() => void> = []
 
 afterEach(() => {
   dispose.splice(0).forEach(run => run())
+  vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 describe('video knowledge plugin API', () => {
+  it('keeps Wiki lint read-only and requires an explicit source withdrawal', async () => {
+    const rest = vi.fn().mockResolvedValue({})
+
+    dispose.push(bindApi(rest))
+    await lintWikiStructure()
+    await lintWikiSemantics('A/B conflict')
+    expect(rest).toHaveBeenNthCalledWith(1, '/wiki/lint/structure', undefined)
+    expect(rest).toHaveBeenNthCalledWith(2, '/wiki/lint/semantic', {
+      method: 'POST', body: { focus: 'A/B conflict' }, timeoutMs: 180_000
+    })
+    await withdrawWikiSource('media/one', 'sr_one', 'Incorrect transcript')
+    expect(rest).toHaveBeenLastCalledWith('/wiki/sources/media%2Fone/sr_one/withdraw', {
+      method: 'POST', body: { reason: 'Incorrect transcript' }
+    })
+    await recompileWikiFusion(['media/one'])
+    expect(rest).toHaveBeenLastCalledWith('/wiki/fusion/recompile', {
+      method: 'POST', body: { media_ids: ['media/one'] }
+    })
+    await applyWikiReview('page/one', 2, '# Reviewed', 'wl_one')
+    expect(rest).toHaveBeenLastCalledWith('/wiki/pages/page%2Fone/review', {
+      method: 'POST', body: {
+        expected_revision: 2, body: '# Reviewed', lint_run_id: 'wl_one'
+      }
+    })
+  })
+
   it('separates read-only Wiki questions from explicit save requests', async () => {
     const rest = vi.fn().mockResolvedValue({})
 
@@ -55,6 +89,34 @@ describe('video knowledge plugin API', () => {
     expect(socket).toHaveBeenCalledWith('/events', expect.any(Function))
     unbind()
     expect(stop).toHaveBeenCalledOnce()
+  })
+
+  it('coalesces progress events and refreshes the full library only at state changes', () => {
+    vi.useFakeTimers()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries').mockResolvedValue()
+
+    let onMessage: (data: unknown) => void = () => {}
+
+    const socket = vi.fn().mockImplementation((_path, callback) => {
+      onMessage = callback
+
+      return vi.fn()
+    })
+
+    dispose.push(bindApi(vi.fn().mockResolvedValue({}), socket))
+
+    for (let i = 0; i < 20; i++) {onMessage({ type: 'job.progress' })}
+    expect(invalidate).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(750)
+    expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['video-knowledge', 'jobs'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['video-knowledge', 'job-events'] })
+
+    onMessage({ type: 'job.progress' })
+    onMessage({ type: 'job.state_changed' })
+    vi.advanceTimersByTime(750)
+    expect(invalidate).toHaveBeenCalledTimes(3)
+    expect(invalidate).toHaveBeenLastCalledWith({ queryKey: ['video-knowledge'] })
   })
 
   it('keeps source probing and ingest inside the plugin REST namespace', async () => {

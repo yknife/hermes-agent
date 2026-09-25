@@ -114,6 +114,12 @@ async def test_desktop_controller_routes_wiki_manual_ingestion_and_reading(
         catalog = await controller.dispatch("GET", "/wiki/pages")
         page_id = catalog.body["items"][0]["page_id"]
         page = await controller.dispatch("GET", f"/wiki/pages/{page_id}")
+        structure = await controller.dispatch("GET", "/wiki/lint/structure")
+        history = await controller.dispatch("GET", f"/wiki/pages/{page_id}/history")
+        external_diff = await controller.dispatch("GET", f"/wiki/pages/{page_id}/diff")
+        schema_preview = await controller.dispatch(
+            "GET", "/wiki/maintenance/schema/preview"
+        )
         source_revision = (
             await controller.dispatch(
                 "GET", "/wiki/ingestions", query={"media_id": media_id}
@@ -136,6 +142,9 @@ async def test_desktop_controller_routes_wiki_manual_ingestion_and_reading(
         fusion = await controller.dispatch(
             "POST", "/wiki/fusion/backfill", payload={"media_ids": [media_id]}
         )
+        recompile = await controller.dispatch(
+            "POST", "/wiki/fusion/recompile", payload={"media_ids": [media_id]}
+        )
         updated_settings = await controller.dispatch(
             "PUT", "/wiki/settings", payload={"auto_ingest": True}
         )
@@ -143,6 +152,10 @@ async def test_desktop_controller_routes_wiki_manual_ingestion_and_reading(
 
         assert catalog.body["initialized"] is True
         assert page.body["page_id"] == page_id
+        assert structure.status == 200
+        assert history.body[0]["revision"] == 1
+        assert external_diff.body["changed"] is False
+        assert schema_preview.body["count"] == 1
         assert source.body["media_id"] == media_id
         assert citation.body["media_id"] == media_id
         assert rebuilt.body["count"] == 1
@@ -150,6 +163,8 @@ async def test_desktop_controller_routes_wiki_manual_ingestion_and_reading(
         assert backfill.body["job_ids"] == []
         assert cancelled.body["cancelled_job_ids"] == []
         assert len(fusion.body["job_ids"]) == 1
+        assert recompile.status == 200
+        assert recompile.body["job_ids"] == fusion.body["job_ids"]
         assert updated_settings.body["auto_ingest"] is True
         assert missing.status == 404
     finally:

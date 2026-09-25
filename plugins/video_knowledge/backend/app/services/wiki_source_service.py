@@ -299,10 +299,8 @@ class WikiVideoService:
             )
         ]
         for citation in refs:
-            if not citation.segment_ids or len(set(citation.segment_ids)) != len(
-                citation.segment_ids
-            ):
-                raise WikiStorageError("Citation has missing or duplicate segment IDs")
+            if not citation.segment_ids:
+                raise WikiStorageError("Citation has no segment IDs")
             try:
                 cited = [segments[item_id] for item_id in citation.segment_ids]
             except KeyError as exc:
@@ -481,10 +479,18 @@ class WikiVideoService:
         self, media_id: str, document_ids: list[str], lease: WikiLease
     ) -> WikiVideoResult:
         snapshot = await self.freeze(media_id, document_ids)
+        if self.storage._path(
+            f"_meta/withdrawals/{snapshot.source_revision}.json"
+        ).is_file():
+            raise WikiConflictError("Withdrawn source cannot be republished")
         page_id = "video_" + media_id
         old = await self.storage.read_page(page_id)
         if old:
             old_frontmatter = yaml.safe_load(old.content.split("\n---\n", 1)[0][4:])
+            if old_frontmatter["generation_metadata"].get("mode") == "user_review":
+                raise WikiConflictError(
+                    "Reviewed Wiki page requires manual reconciliation"
+                )
             if snapshot.source_revision in old_frontmatter["source_refs"]:
                 return WikiVideoResult(
                     snapshot.source_revision,
@@ -535,7 +541,10 @@ class WikiVideoService:
             "source_revision": snapshot.source_revision,
             "media_id": snapshot.media_id,
             "transcript_id": snapshot.transcript_id,
-            "segment_ids": citation.segment_ids,
+            # Some otherwise valid analysis bundles repeat an ID within one
+            # citation. Preserve the original analysis in raw/ while publishing
+            # a canonical evidence reference for Wiki consumers.
+            "segment_ids": list(dict.fromkeys(citation.segment_ids)),
             "start_ms": citation.start_ms,
             "end_ms": citation.end_ms,
         }

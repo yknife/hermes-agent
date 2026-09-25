@@ -15,6 +15,9 @@ from plugins.video_knowledge.backend.app.services.job_service import JobStateMac
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
     WikiIngestionService,
 )
+from plugins.video_knowledge.backend.app.services.wiki_maintenance_service import (
+    WikiMaintenanceService,
+)
 from plugins.video_knowledge.backend.app.services.wiki_source_service import (
     WikiVideoService,
 )
@@ -92,6 +95,11 @@ class WikiPipeline:
                 ingestion_id = current.id
         finally:
             await self.storage.release_lease(lease)
+        # Reanalysis leaves immutable old snapshots in raw/, but removes their
+        # support from the current Wiki before the new fusion job starts.
+        await WikiMaintenanceService(
+            self.database, self.storage.storage_root
+        ).supersede_versions(media_id, result.source_revision)
         # A separate, lower-priority job keeps the committed source available
         # even if the Skill or model is unavailable.
         await WikiIngestionService(
@@ -138,8 +146,12 @@ class WikiFusionPipeline:
             progress=max(job.progress, 10),
             message="正在融合 Wiki 知识",
         )
+        force_recompile = json.loads(job.input_json).get("force_recompile") is True
         result = await self.adapter.run_ingest(
-            media_id, source_revision, lease_alive=lambda: not heartbeat.lost.is_set()
+            media_id,
+            source_revision,
+            lease_alive=lambda: not heartbeat.lost.is_set(),
+            **({"force_recompile": True} if force_recompile else {}),
         )
         if heartbeat.lost.is_set():
             raise JobLeaseLostError("Wiki fusion job lease was lost")

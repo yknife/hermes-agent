@@ -383,9 +383,14 @@ class WikiStorageService:
         return self._page_from_projection(row)
 
     async def commit_pages(
-        self, changes: dict[str, str], *, expected_revision: int, lease: WikiLease
+        self,
+        changes: dict[str, str],
+        *,
+        expected_revision: int,
+        lease: WikiLease,
+        navigation_only: bool = False,
     ) -> WikiCommitResult:
-        if not changes:
+        if not changes and not navigation_only:
             raise WikiStorageError("Empty Wiki commit")
         catalog = await self._catalog()
         if lease.wiki_id != catalog.id or catalog.revision != expected_revision:

@@ -17,6 +17,24 @@ class WikiQuestionRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
 
 
+class WikiLintRequest(BaseModel):
+    focus: str = Field(default="all pages", min_length=1, max_length=300)
+
+
+class WikiRollbackRequest(BaseModel):
+    revision: int = Field(ge=1)
+
+
+class WikiWithdrawalRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class WikiReviewRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    body: str = Field(min_length=1, max_length=100000)
+    lint_run_id: str = Field(pattern=r"^wl_[0-9a-f]{32}$")
+
+
 @dataclass(frozen=True)
 class WikiPage:
     page_id: str

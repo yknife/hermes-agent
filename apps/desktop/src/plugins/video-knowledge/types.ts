@@ -107,6 +107,39 @@ export interface WikiSavedAnswer {
   unchanged: boolean
 }
 
+export interface WikiLintIssue {
+  code: string
+  page_id?: null | string
+  detail?: string
+  description?: string
+  citations?: WikiAnswerCitation[]
+}
+
+export interface WikiStructureLint {
+  wiki_revision: number
+  issues: WikiLintIssue[]
+}
+
+export interface WikiSemanticLint {
+  run_id: string
+  wiki_revision: number
+  issues: WikiLintIssue[]
+  skill_sha256: string
+}
+
+export interface WikiRevision {
+  revision: number
+  commit_id: string
+  sha256: string
+}
+
+export interface WikiDiff {
+  page_id: string
+  revision: number
+  changed: boolean
+  diff: string
+}
+
 export interface Health {
   status: 'ok' | 'degraded'
   components: Record<string, { detail?: null | string; status: string }>

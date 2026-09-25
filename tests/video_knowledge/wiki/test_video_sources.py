@@ -246,6 +246,37 @@ async def test_e_degraded_and_bad_citation_rejected(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_duplicate_analysis_citation_ids_keep_raw_source_and_publish_unique_refs(
+    tmp_path: Path,
+) -> None:
+    database, storage, service = await make_service(tmp_path)
+    try:
+        ids = await seed(database, "A")
+        async with database.session() as session, session.begin():
+            document = await session.get(
+                KnowledgeDocument, "knowledge_A_knowledge_points"
+            )
+            data = json.loads(document.content_json)
+            data[0]["citation"]["segment_ids"] = ["a2", "a2"]
+            document.content_json = json.dumps(data, ensure_ascii=False)
+        lease = await storage.acquire_lease("fixture")
+        result = await service.ingest(SAMPLES["A"]["media_id"], ids, lease)
+        snapshot = service.read_snapshot(
+            SAMPLES["A"]["media_id"], result.source_revision
+        )
+        assert snapshot.analysis["documents"]["knowledge_points"][0]["citation"][
+            "segment_ids"
+        ] == ["a2", "a2"]
+        page = await storage.read_page(result.page_id)
+        front = yaml.safe_load(page.content.split("\n---\n", 1)[0][4:])
+        assert all(ref["segment_ids"] == ["a2"] for ref in front["citation_refs"])
+        citation = await service.resolve_citation(result.page_id, "知识点-1")
+        assert citation.segment_ids == ("a2",)
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_live_parts_share_session_but_have_local_time_links(
     tmp_path: Path,
 ) -> None:

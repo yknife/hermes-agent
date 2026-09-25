@@ -18,6 +18,9 @@ from plugins.video_knowledge.backend.app.services.wiki_compiler import WikiCompi
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
     WikiIngestionService,
 )
+from plugins.video_knowledge.backend.app.services.wiki_maintenance_service import (
+    WikiMaintenanceService,
+)
 from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
     WikiConflictError,
     WikiStorageError,
@@ -146,6 +149,26 @@ async def test_fusion_job_records_skill_result_separately(tmp_path: Path) -> Non
             assert (
                 await session.get(Job, base_job.id)
             ).status == JobStatus.SUCCEEDED.value
+        recompile = await service.recompile_fusion([SAMPLES["A"]["media_id"]])
+        assert len(recompile["job_ids"]) == 1
+        assert recompile["job_ids"][0] != fusion_job.id
+
+        class RecompileAdapter:
+            async def run_ingest(
+                self, media_id, source_revision, *, lease_alive, force_recompile
+            ):
+                assert media_id == SAMPLES["A"]["media_id"]
+                assert source_revision and lease_alive() and force_recompile is True
+                return WikiAgentResult("wr_recompile", "wc_recompile", (), "hash")
+
+        new_job = await jobs.claim_next("recompile-worker", 30)
+        await WikiFusionPipeline(database, jobs, storage, RecompileAdapter()).run(
+            new_job, "recompile-worker", Heartbeat()
+        )
+        async with database.session() as session:
+            current = await session.get(WikiIngestion, request.id)
+            assert current.fusion_run_id == "wr_recompile"
+            assert current.fusion_commit_id == "wc_recompile"
     finally:
         await database.dispose()
 
@@ -210,6 +233,62 @@ def _proposal(
             }
         ]
     }
+
+
+@pytest.mark.asyncio
+async def test_withdrawing_b_removes_active_fusion_support(tmp_path: Path) -> None:
+    database, storage, video, sources = await _sources(tmp_path, ("A", "B"))
+    try:
+        compiler = WikiCompiler(storage)
+        page_id = None
+        for key in ("A", "B"):
+            changes = await compiler.compile(
+                _proposal(
+                    sources[key], page_id=page_id, text=f"Recommendation from {key}"
+                ),
+                {source.source_revision: source for source in sources.values()},
+                skill_sha256="test",
+                run_id=f"run-{key}",
+            )
+            lease = await storage.acquire_lease(f"fusion:{key}")
+            try:
+                committed = await storage.commit_pages(
+                    changes,
+                    expected_revision=await storage.current_revision(),
+                    lease=lease,
+                )
+            finally:
+                await storage.release_lease(lease)
+            page_id = committed.page_ids[0]
+        service = WikiMaintenanceService(database, storage.storage_root)
+        record = await service.withdraw(
+            sources["B"].media_id, sources["B"].source_revision, "Bad transcript"
+        )
+        assert page_id in record["affected_page_ids"]
+        current = await storage.read_page(page_id)
+        front = yaml.safe_load(current.content.split("\n---\n", 1)[0][4:])
+        assert sources["B"].source_revision not in front["source_refs"]
+        assert all(
+            ref["source_revision"] != sources["B"].source_revision
+            for ref in front["citation_refs"]
+        )
+        assert len(front["fusion_claims"]) == 1
+        assert "withdrawn support" in current.content
+        assert (
+            video.read_snapshot(
+                sources["B"].media_id, sources["B"].source_revision
+            ).source_revision
+            == sources["B"].source_revision
+        )
+        with pytest.raises(WikiStorageError, match="Withdrawn"):
+            await compiler.compile(
+                _proposal(sources["B"], page_id=page_id),
+                {sources["B"].source_revision: sources["B"]},
+                skill_sha256="test",
+                run_id="late-B",
+            )
+    finally:
+        await database.dispose()
 
 
 @pytest.mark.asyncio
@@ -280,6 +359,26 @@ async def test_a_b_c_merge_preserves_provenance_and_conflict(tmp_path: Path) -> 
             run_id="repeat",
         )
         assert same == {}
+        schema_path = storage._path("SCHEMA.md")
+        schema_path.write_bytes(
+            schema_path.read_bytes().replace(b"schema_version: 1", b"schema_version: 2")
+        )
+        recompiled = await compiler.compile(
+            _proposal(
+                sources["C"],
+                page_id=page_id,
+                text="作者反对无条件全量重建，证据尚不足",
+                contested=True,
+            ),
+            {source.source_revision: source for source in sources.values()},
+            skill_sha256="test-skill",
+            run_id="schema-recompile",
+        )
+        assert recompiled
+        new_front = yaml.safe_load(
+            next(iter(recompiled.values())).split("\n---\n", 1)[0][4:]
+        )
+        assert new_front["schema_version"] == 2
     finally:
         await database.dispose()
 

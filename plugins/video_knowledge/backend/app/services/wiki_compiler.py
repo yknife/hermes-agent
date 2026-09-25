@@ -94,6 +94,23 @@ class WikiCompiler:
         run_id: str,
         input_source_revision: str | None = None,
     ) -> dict[str, str]:
+        schema = self.storage._path("SCHEMA.md").read_text(encoding="utf-8")
+        version_match = re.search(r"(?m)^schema_version:\s*(\d+)\s*$", schema)
+        if version_match is None:
+            raise WikiStorageError("Wiki SCHEMA has no schema_version")
+        schema_version = int(version_match.group(1))
+        schema_sha256 = hashlib.sha256(schema.encode("utf-8")).hexdigest()
+        tag_match = re.search(r"初始标签：([^。\n]+)", schema)
+        allowed_tags = (
+            {tag.strip() for tag in tag_match.group(1).split("、")}
+            if tag_match
+            else TAGS
+        )
+        if any(
+            self.storage._path(f"_meta/withdrawals/{revision}.json").is_file()
+            for revision in sources
+        ):
+            raise WikiStorageError("Withdrawn source cannot support a fusion page")
         pages = proposal.get("pages")
         if not isinstance(pages, list) or len(pages) > MAX_PAGES:
             raise WikiStorageError("Fusion change set exceeds page budget")
@@ -111,7 +128,7 @@ class WikiCompiler:
             if not isinstance(aliases, list) or len(aliases) > 8:
                 raise WikiStorageError("Invalid fusion aliases")
             aliases = [_safe_text(alias, 120) for alias in aliases]
-            if not isinstance(tags, list) or not set(tags) <= TAGS:
+            if not isinstance(tags, list) or not set(tags) <= allowed_tags:
                 raise WikiStorageError("Fusion tags must appear in SCHEMA")
             page_id = entry.get("page_id")
             if page_id is None:
@@ -178,6 +195,11 @@ class WikiCompiler:
                 })
 
             for claim in old_front.get("fusion_claims", []) if old_front else []:
+                if any(
+                    ref["source_revision"] in old_front.get("withdrawn_source_refs", [])
+                    for ref in claim["evidence"]
+                ):
+                    continue
                 combined[claim_key(claim)] = claim
             for raw_claim in claims:
                 if (
@@ -266,6 +288,7 @@ class WikiCompiler:
                 "aliases": aliases,
                 "tags": tags,
                 "related_page_ids": sorted(related),
+                "schema_sha256": schema_sha256,
             })
             if (
                 old_front
@@ -312,12 +335,13 @@ class WikiCompiler:
                 "created_at": old_front["created_at"] if old_front else now,
                 "updated_at": now,
                 "revision": prior.revision + 1 if prior else 1,
-                "schema_version": 1,
+                "schema_version": schema_version,
                 "source_refs": revisions,
                 "generation_metadata": {
                     "mode": "wiki_fusion",
                     "compiler_version": COMPILER_VERSION,
                     "skill_sha256": skill_sha256,
+                    "schema_sha256": schema_sha256,
                     "fingerprint": fingerprint,
                     "run_id": run_id,
                     "processed_sources": sorted({

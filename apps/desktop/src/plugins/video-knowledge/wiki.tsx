@@ -13,24 +13,35 @@ import {
 import { useState } from 'react'
 
 import {
+  applyWikiReview,
   askWiki,
   cancelWikiBackfill,
   fetchMedia,
   fetchWikiCatalog,
+  fetchWikiDiff,
+  fetchWikiHistory,
   fetchWikiIngestions,
   fetchWikiPage,
   fetchWikiSettings,
   fetchWikiSource,
   jobAction,
+  lintWikiSemantics,
+  lintWikiStructure,
   previewWikiBackfill,
+  previewWikiSchema,
   rebuildWikiSearch,
+  recompileWikiFusion,
+  repairWikiIndex,
+  repairWikiLinks,
   resolveWikiCitation,
+  rollbackWikiPage,
   saveWikiAnswer,
   searchWiki,
   submitWikiBackfill,
   submitWikiFusionBackfill,
   submitWikiMedia,
-  updateWikiSettings
+  updateWikiSettings,
+  withdrawWikiSource
 } from './api'
 import { errorMessage, timestamp } from './format'
 import type { WikiBackfillPreview, WikiIngestion } from './types'
@@ -159,6 +170,11 @@ export function WikiView({
   const [preview, setPreview] = useState<null | WikiBackfillPreview[]>(null)
   const [batchId, setBatchId] = useState<null | string>(null)
   const [notice, setNotice] = useState<null | string>(null)
+  const [withdrawReason, setWithdrawReason] = useState('')
+  const [compareRevision, setCompareRevision] = useState<null | number>(null)
+  const [reviewBody, setReviewBody] = useState<null | string>(null)
+  const [reviewRevision, setReviewRevision] = useState<null | number>(null)
+  const [reviewRunId, setReviewRunId] = useState<null | string>(null)
 
   const catalog = useQuery({
     queryFn: () => fetchWikiCatalog(pageType || undefined, tag || undefined),
@@ -181,6 +197,70 @@ export function WikiView({
     enabled: Boolean(activePageId),
     queryFn: () => fetchWikiPage(activePageId!),
     queryKey: ['video-knowledge', 'wiki', 'page', activePageId]
+  })
+
+  const history = useQuery({
+    enabled: Boolean(activePageId),
+    queryFn: () => fetchWikiHistory(activePageId!),
+    queryKey: ['video-knowledge', 'wiki', 'history', activePageId]
+  })
+
+  const externalDiff = useQuery({
+    enabled: Boolean(activePageId),
+    queryFn: () => fetchWikiDiff(activePageId!),
+    queryKey: ['video-knowledge', 'wiki', 'diff', activePageId]
+  })
+
+  const revisionDiff = useQuery({
+    enabled: Boolean(activePageId && compareRevision),
+    queryFn: () => fetchWikiDiff(activePageId!, compareRevision!),
+    queryKey: ['video-knowledge', 'wiki', 'revision-diff', activePageId, compareRevision]
+  })
+
+  const structureAction = useMutation({ mutationFn: lintWikiStructure })
+  const semanticAction = useMutation({ mutationFn: () => lintWikiSemantics() })
+  const schemaAction = useMutation({ mutationFn: previewWikiSchema })
+
+  const recompileAction = useMutation({
+    mutationFn: () => recompileWikiFusion(),
+    onSuccess: result => {
+      setNotice(`已提交 ${result.job_ids.length} 个规范重编译任务`)
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+    }
+  })
+
+  const indexAction = useMutation({
+    mutationFn: repairWikiIndex,
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+  })
+
+  const rollbackAction = useMutation({
+    mutationFn: (revision: number) => rollbackWikiPage(activePageId!, revision),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+  })
+
+  const linkAction = useMutation({
+    mutationFn: () => repairWikiLinks(activePageId!),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+  })
+
+  const withdrawAction = useMutation({
+    mutationFn: (revision: string) => withdrawWikiSource(mediaId!, revision, withdrawReason.trim()),
+    onSuccess: () => {
+      setSourceRevision(null)
+      setWithdrawReason('')
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+    }
+  })
+
+  const reviewAction = useMutation({
+    mutationFn: () => applyWikiReview(activePageId!, reviewRevision!, reviewBody!, reviewRunId!),
+    onSuccess: () => {
+      setReviewBody(null)
+      setReviewRevision(null)
+      setReviewRunId(null)
+      void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
+    }
   })
 
   const mediaId = page.data?.type === 'video' ? page.data.page_id.replace(/^video_/, '') : null
@@ -284,6 +364,8 @@ export function WikiView({
     rebuildAction.error ??
     syncAction.error ??
     retryAction.error
+    ?? structureAction.error ?? semanticAction.error ?? schemaAction.error ?? recompileAction.error
+    ?? indexAction.error ?? rollbackAction.error ?? withdrawAction.error ?? linkAction.error ?? reviewAction.error
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -388,6 +470,26 @@ export function WikiView({
           </Button>
         )}
       </div>
+      <section className="border-b border-(--ui-stroke-secondary) px-5 py-2 text-xs">
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={!catalog.data?.initialized || structureAction.isPending} onClick={() => structureAction.mutate()} size="xs" variant="secondary">结构巡检</Button>
+          <Button disabled={!catalog.data?.initialized || semanticAction.isPending} onClick={() => semanticAction.mutate()} size="xs" variant="secondary">{semanticAction.isPending ? '语义巡检中…' : '语义巡检'}</Button>
+          <Button disabled={!catalog.data?.initialized || schemaAction.isPending} onClick={() => schemaAction.mutate()} size="xs" variant="ghost">规范影响预览</Button>
+          <Button disabled={!catalog.data?.initialized || indexAction.isPending} onClick={() => indexAction.mutate()} size="xs" variant="ghost">修复目录索引</Button>
+        </div>
+        {structureAction.data && <div className="mt-2 space-y-1">
+          <p>结构问题 {structureAction.data.issues.length} 项 · Wiki 修订 {structureAction.data.wiki_revision}</p>
+          {structureAction.data.issues.map((item, index) => <p key={`${item.code}-${index}`}>{item.code} · {item.page_id ?? '目录'} · {item.detail}</p>)}
+        </div>}
+        {semanticAction.data && <div className="mt-2 space-y-1">
+          <p>语义建议 {semanticAction.data.issues.length} 项 · 报告 {semanticAction.data.run_id}</p>
+          {semanticAction.data.issues.map((item, index) => <p key={`${item.code}-${index}`}>{item.code} · {item.description} · {item.citations?.map(ref => `${ref.page_id}@${ref.page_revision}`).join(', ')}</p>)}
+        </div>}
+        {schemaAction.data && <div className="mt-2 flex flex-wrap items-center gap-2">
+          <span>规范版本 {schemaAction.data.schema_version} · 可能影响 {schemaAction.data.count} 页 · 版本待更新 {schemaAction.data.outdated_page_ids.length} 页</span>
+          <Button disabled={recompileAction.isPending} onClick={() => recompileAction.mutate()} size="xs" variant="secondary">按当前规范重新融合</Button>
+        </div>}
+      </section>
       {preview && (
         <details className="border-b border-(--ui-stroke-secondary) px-5 py-2 text-xs">
           <summary className="cursor-pointer">查看 {preview.length} 项补录预览</summary>
@@ -465,6 +567,10 @@ export function WikiView({
                   key={item.page_id}
                   onClick={() => {
                     setPageId(item.page_id)
+                    setCompareRevision(null)
+                    setReviewBody(null)
+                    setReviewRevision(null)
+                    setReviewRunId(null)
                     setSourceRevision(null)
                     setNotice(null)
                   }}
@@ -540,15 +646,53 @@ export function WikiView({
                   {currentIngestion?.error_code && (
                     <p className="mt-2 text-xs text-destructive">任务失败：{currentIngestion.error_code}</p>
                   )}
+                  {externalDiff.data?.changed && <div className="mt-3 rounded border border-destructive p-2 text-xs">
+                    <p className="font-semibold">检测到页面外部编辑，同步会报告冲突。</p>
+                    <pre className="max-h-40 overflow-auto whitespace-pre-wrap">{externalDiff.data.diff}</pre>
+                  </div>}
+                  {history.data && history.data.length > 1 && <details className="mt-3 text-xs">
+                    <summary className="cursor-pointer">修订历史与回退</summary>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {history.data.filter(item => item.revision < page.data!.revision).map(item => <div className="flex gap-1" key={item.commit_id}>
+                        <Button onClick={() => setCompareRevision(item.revision)} size="xs" variant="ghost">查看修订 {item.revision} 差异</Button>
+                        <Button
+                          disabled={rollbackAction.isPending || externalDiff.data?.changed || compareRevision !== item.revision}
+                          onClick={() => rollbackAction.mutate(item.revision)}
+                          size="xs" variant="secondary"
+                        >回退</Button>
+                      </div>)}
+                    </div>
+                    {revisionDiff.data && <pre className="mt-2 max-h-60 overflow-auto whitespace-pre-wrap">{revisionDiff.data.diff}</pre>}
+                  </details>}
+                  <Button disabled={linkAction.isPending || externalDiff.data?.changed} onClick={() => linkAction.mutate()} size="xs" variant="ghost">修复此页断链</Button>
                 </header>
                 <WikiMarkdown
                   onCitation={itemKey => citationAction.mutate(itemKey)}
                   onPage={target => {
                     setPageId(target)
+                    setCompareRevision(null)
+                    setReviewBody(null)
+                    setReviewRevision(null)
+                    setReviewRunId(null)
                     setSourceRevision(null)
                   }}
                   page={page.data}
                 />
+                {semanticAction.data?.issues.some(issue => issue.citations?.some(ref => ref.page_id === page.data!.page_id && ref.page_revision === page.data!.revision)) &&
+                  <section className="rounded border border-(--ui-stroke-secondary) p-3 text-xs">
+                    <Button onClick={() => {
+                      setReviewBody(page.data!.body)
+                      setReviewRevision(page.data!.revision)
+                      setReviewRunId(semanticAction.data!.run_id)
+                    }} size="xs" variant="secondary">人工复核此页建议</Button>
+                    {reviewBody !== null && <div className="mt-2 space-y-2">
+                      <textarea aria-label="复核后的页面正文" className="min-h-60 w-full rounded border border-(--ui-stroke-secondary) bg-background p-2" maxLength={100000} onChange={event => setReviewBody(event.target.value)} value={reviewBody} />
+                      <div className="flex gap-2">
+                        <Button disabled={!reviewBody.trim() || reviewAction.isPending || page.data!.revision !== reviewRevision} onClick={() => reviewAction.mutate()} size="xs">提交复核修订</Button>
+                        <Button onClick={() => { setReviewBody(null); setReviewRevision(null); setReviewRunId(null) }} size="xs" variant="ghost">取消</Button>
+                      </div>
+                    </div>}
+                  </section>}
                 <section className="border-t border-(--ui-stroke-secondary) pt-4 text-xs">
                   <h3 className="font-semibold">来源修订</h3>
                   <div className="mt-2 flex flex-wrap gap-2">
@@ -580,6 +724,10 @@ export function WikiView({
                     ) : null}
                   </section>
                 )}
+                {mediaId && sourceRevision && <div className="flex gap-2 text-xs">
+                  <Input aria-label="撤回来源原因" maxLength={500} onChange={event => setWithdrawReason(event.target.value)} placeholder="撤回来源原因" value={withdrawReason} />
+                  <Button disabled={!withdrawReason.trim() || withdrawAction.isPending} onClick={() => withdrawAction.mutate(sourceRevision)} size="xs" variant="secondary">撤回此来源</Button>
+                </div>}
                 {page.data.citation_refs.length > 0 && (
                   <section className="border-t border-(--ui-stroke-secondary) pt-4 text-xs">
                     <h3 className="font-semibold">时间引用</h3>

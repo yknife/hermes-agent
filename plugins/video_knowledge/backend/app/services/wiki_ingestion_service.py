@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import yaml
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -259,6 +260,75 @@ class WikiIngestionService:
             job_id = await self.enqueue_fusion(ingestion_id)
             if job_id:
                 jobs.append(job_id)
+        return {"job_ids": jobs}
+
+    async def recompile_fusion(self, media_ids: list[str] | None = None) -> dict:
+        """Start fresh Skill runs for current sources after an explicit SCHEMA review."""
+        async with self.database.session() as session:
+            statement = select(WikiIngestion).where(
+                WikiIngestion.source_revision.is_not(None)
+            )
+            if media_ids is not None:
+                statement = statement.where(
+                    WikiIngestion.media_id.in_(media_ids[:1000])
+                )
+            rows = (
+                await session.scalars(
+                    statement.order_by(
+                        WikiIngestion.created_at.desc(), WikiIngestion.id.desc()
+                    ).limit(1000)
+                )
+            ).all()
+        latest = {}
+        for row in rows:
+            latest.setdefault(row.media_id, row.id)
+        jobs = []
+        for ingestion_id in latest.values():
+            async with self.database.session() as session, session.begin():
+                request = await session.get(WikiIngestion, ingestion_id)
+                page = await self.storage.read_page(f"video_{request.media_id}")
+                if page is None:
+                    continue
+                front = yaml.safe_load(page.content.split("\n---\n", 1)[0][4:])
+                if (
+                    not front.get("source_refs")
+                    or front["source_refs"][-1] != request.source_revision
+                ):
+                    continue
+                if (
+                    request.needs_review
+                    or self.storage._path(
+                        f"_meta/withdrawals/{request.source_revision}.json"
+                    ).is_file()
+                ):
+                    continue
+                old = (
+                    await session.get(Job, request.fusion_job_id)
+                    if request.fusion_job_id
+                    else None
+                )
+                if old and old.status in {
+                    JobStatus.PENDING.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.RETRY_WAIT.value,
+                    JobStatus.PAUSED.value,
+                }:
+                    jobs.append(old.id)
+                    continue
+                job = await self.jobs.create(
+                    job_type=JobType.WIKI_FUSE,
+                    priority=250,
+                    max_attempts=3,
+                    input_data={"ingestion_id": request.id, "force_recompile": True},
+                    media_id=request.media_id,
+                    parent_job_id=request.job_id,
+                    actor="wiki:schema_recompile",
+                    session=session,
+                )
+                request.fusion_job_id = job.id
+                request.fusion_run_id = None
+                request.fusion_commit_id = None
+                jobs.append(job.id)
         return {"job_ids": jobs}
 
     async def preview(self, media_ids: list[str] | None = None) -> list[dict]:

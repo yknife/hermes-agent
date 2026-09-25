@@ -54,7 +54,11 @@ from plugins.video_knowledge.backend.app.schemas.transcripts import (
 from plugins.video_knowledge.backend.app.schemas.wiki import (
     AutoIngestSetting,
     BackfillSelection,
+    WikiLintRequest,
     WikiQuestionRequest,
+    WikiReviewRequest,
+    WikiRollbackRequest,
+    WikiWithdrawalRequest,
 )
 from plugins.video_knowledge.backend.app.services.asr_service import ASRSettingsService
 from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
@@ -86,6 +90,9 @@ from plugins.video_knowledge.backend.app.services.transcript_service import (
 )
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
     WikiIngestionService,
+)
+from plugins.video_knowledge.backend.app.services.wiki_maintenance_service import (
+    WikiMaintenanceService,
 )
 from plugins.video_knowledge.backend.app.services.wiki_query_service import (
     WikiQueryService,
@@ -520,6 +527,109 @@ class VideoKnowledgeController:
         reader = WikiReadService(database, storage_root)
         service = WikiIngestionService(database, storage_root)
         query_service = WikiQueryService(database, storage_root)
+        maintenance = WikiMaintenanceService(database, storage_root)
+        if method == "GET" and parts == ["lint", "structure"]:
+            return self._json(await maintenance.structural_lint())
+        if method == "POST" and parts == ["lint", "semantic"]:
+            from plugins.video_knowledge.backend.hermes_client.wiki_lint import (
+                WikiLintAdapter,
+            )
+
+            request = WikiLintRequest.model_validate(payload)
+            try:
+                return self._json(
+                    await WikiLintAdapter(maintenance.storage).run(request.focus)
+                )
+            except WikiAgentError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "WIKI_LINT_FAILED", "message": str(exc)}}, 503
+                )
+        if method == "GET" and parts == ["maintenance", "schema", "preview"]:
+            return self._json(await maintenance.schema_preview())
+        if method == "POST" and parts == ["maintenance", "index", "repair"]:
+            try:
+                return self._json(await maintenance.repair_index())
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+        if (
+            method == "GET"
+            and len(parts) == 3
+            and parts[0] == "pages"
+            and parts[2] == "history"
+        ):
+            return self._json(await maintenance.history(parts[1]))
+        if (
+            method == "GET"
+            and len(parts) == 3
+            and parts[0] == "pages"
+            and parts[2] == "diff"
+        ):
+            revision = int(query["revision"]) if "revision" in query else None
+            return self._json(await maintenance.diff(parts[1], revision))
+        if (
+            method == "POST"
+            and len(parts) == 3
+            and parts[0] == "pages"
+            and parts[2] == "rollback"
+        ):
+            request = WikiRollbackRequest.model_validate(payload)
+            try:
+                return self._json(
+                    await maintenance.rollback(parts[1], request.revision)
+                )
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+        if (
+            method == "POST"
+            and len(parts) == 3
+            and parts[0] == "pages"
+            and parts[2] == "repair-links"
+        ):
+            try:
+                return self._json(await maintenance.repair_broken_links(parts[1]))
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+        if (
+            method == "POST"
+            and len(parts) == 3
+            and parts[0] == "pages"
+            and parts[2] == "review"
+        ):
+            request = WikiReviewRequest.model_validate(payload)
+            try:
+                return self._json(
+                    await maintenance.apply_review(
+                        parts[1],
+                        request.expected_revision,
+                        request.body,
+                        request.lint_run_id,
+                    )
+                )
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
+        if (
+            method == "POST"
+            and len(parts) == 4
+            and parts[0] == "sources"
+            and parts[3] == "withdraw"
+        ):
+            request = WikiWithdrawalRequest.model_validate(payload)
+            try:
+                return self._json(
+                    await maintenance.withdraw(parts[1], parts[2], request.reason)
+                )
+            except WikiStorageError as exc:
+                return ControllerResponse(
+                    {"error": {"code": "CONFLICT", "message": str(exc)}}, 409
+                )
         if method == "POST" and parts == ["query"]:
             request = WikiQuestionRequest.model_validate(payload)
             try:
@@ -619,6 +729,9 @@ class VideoKnowledgeController:
         if method == "POST" and parts == ["fusion", "backfill"]:
             request = BackfillSelection.model_validate(payload)
             return self._json(await service.backfill_fusion(request.media_ids))
+        if method == "POST" and parts == ["fusion", "recompile"]:
+            request = BackfillSelection.model_validate(payload)
+            return self._json(await service.recompile_fusion(request.media_ids))
         if (
             method == "POST"
             and len(parts) == 3

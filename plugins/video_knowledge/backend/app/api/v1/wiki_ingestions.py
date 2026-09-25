@@ -9,10 +9,17 @@ from plugins.video_knowledge.backend.app.infrastructure.db.session import Databa
 from plugins.video_knowledge.backend.app.schemas.wiki import (
     AutoIngestSetting,
     BackfillSelection,
+    WikiLintRequest,
     WikiQuestionRequest,
+    WikiReviewRequest,
+    WikiRollbackRequest,
+    WikiWithdrawalRequest,
 )
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
     WikiIngestionService,
+)
+from plugins.video_knowledge.backend.app.services.wiki_maintenance_service import (
+    WikiMaintenanceService,
 )
 from plugins.video_knowledge.backend.app.services.wiki_query_service import (
     WikiQueryService,
@@ -38,6 +45,121 @@ def _reader(request: Request, database: Database) -> WikiReadService:
 
 def _query_service(request: Request, database: Database) -> WikiQueryService:
     return WikiQueryService(database, request.app.state.settings.storage_root)
+
+
+def _maintenance(request: Request, database: Database) -> WikiMaintenanceService:
+    return WikiMaintenanceService(database, request.app.state.settings.storage_root)
+
+
+@router.get("/lint/structure")
+async def lint_structure(
+    request: Request, database: Annotated[Database, Depends(get_database)]
+) -> dict:
+    return await _maintenance(request, database).structural_lint()
+
+
+@router.post("/lint/semantic")
+async def lint_semantic(
+    payload: WikiLintRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    from plugins.video_knowledge.backend.hermes_client.wiki_lint import WikiLintAdapter
+
+    try:
+        return await WikiLintAdapter(_maintenance(request, database).storage).run(
+            payload.focus
+        )
+    except WikiAgentError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/maintenance/schema/preview")
+async def preview_schema(
+    request: Request, database: Annotated[Database, Depends(get_database)]
+) -> dict:
+    return await _maintenance(request, database).schema_preview()
+
+
+@router.post("/maintenance/index/repair")
+async def repair_index(
+    request: Request, database: Annotated[Database, Depends(get_database)]
+) -> dict:
+    try:
+        return await _maintenance(request, database).repair_index()
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/pages/{page_id}/history")
+async def page_history(
+    page_id: str, request: Request, database: Annotated[Database, Depends(get_database)]
+) -> list[dict]:
+    return await _maintenance(request, database).history(page_id)
+
+
+@router.get("/pages/{page_id}/diff")
+async def page_diff(
+    page_id: str,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+    revision: int | None = None,
+) -> dict:
+    return await _maintenance(request, database).diff(page_id, revision)
+
+
+@router.post("/pages/{page_id}/rollback")
+async def rollback_page(
+    page_id: str,
+    payload: WikiRollbackRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    try:
+        return await _maintenance(request, database).rollback(page_id, payload.revision)
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/pages/{page_id}/repair-links")
+async def repair_page_links(
+    page_id: str, request: Request, database: Annotated[Database, Depends(get_database)]
+) -> dict:
+    try:
+        return await _maintenance(request, database).repair_broken_links(page_id)
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/pages/{page_id}/review")
+async def apply_page_review(
+    page_id: str,
+    payload: WikiReviewRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    try:
+        return await _maintenance(request, database).apply_review(
+            page_id, payload.expected_revision, payload.body, payload.lint_run_id
+        )
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/sources/{media_id}/{source_revision}/withdraw")
+async def withdraw_source(
+    media_id: str,
+    source_revision: str,
+    payload: WikiWithdrawalRequest,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    try:
+        return await _maintenance(request, database).withdraw(
+            media_id, source_revision, payload.reason
+        )
+    except WikiStorageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/query")
@@ -198,6 +320,15 @@ async def submit_fusion_backfill(
     database: Annotated[Database, Depends(get_database)],
 ) -> dict:
     return await _service(request, database).backfill_fusion(payload.media_ids)
+
+
+@router.post("/fusion/recompile")
+async def recompile_fusion(
+    payload: BackfillSelection,
+    request: Request,
+    database: Annotated[Database, Depends(get_database)],
+) -> dict:
+    return await _service(request, database).recompile_fusion(payload.media_ids)
 
 
 @router.post("/backfill/{batch_id}/cancel")
