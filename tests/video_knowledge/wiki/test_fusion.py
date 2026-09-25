@@ -29,6 +29,7 @@ from plugins.video_knowledge.backend.hermes_client.wiki_agent import (
     SKILL_SHA256,
     WikiAgentAdapter,
     WikiAgentError,
+    WikiAgentIncompleteError,
     WikiAgentResult,
 )
 from plugins.video_knowledge.backend.worker.wiki_pipeline import (
@@ -538,6 +539,45 @@ async def test_stale_fusion_revision_rejected(tmp_path: Path) -> None:
             await storage.release_lease(lease)
         found = await adapter._committed_result(source.source_revision)
         assert found is not None and found.commit_id == committed.commit_id
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_model_turn_without_valid_submit_is_retryable(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import json
+
+    import run_agent
+
+    database, storage, _video, sources = await _sources(tmp_path, ("A",))
+
+    class NoSubmitAgent:
+        def __init__(self, **_kwargs):
+            self.session_estimated_cost_usd = 0.0
+
+        def run_conversation(self, _message, *, task_id):
+            assert task_id.startswith("wr_")
+            return {"api_calls": 1, "final_response": "done"}
+
+    try:
+        monkeypatch.setattr(run_agent, "AIAgent", NoSubmitAgent)
+        monkeypatch.setattr(
+            WikiAgentAdapter,
+            "_load_skill",
+            staticmethod(lambda *_args: ("pinned fixture skill", SKILL_SHA256)),
+        )
+        source = sources["A"]
+        adapter = WikiAgentAdapter(storage, model="fixture-model", provider="custom")
+        with pytest.raises(WikiAgentIncompleteError) as caught:
+            await adapter.run_ingest(source.media_id, source.source_revision)
+        assert caught.value.retryable is True
+        assert caught.value.code == "WIKI_AGENT_INCOMPLETE"
+        reports = list(storage._path("_meta/reports").glob("wr_*.json"))
+        assert len(reports) == 1
+        assert json.loads(reports[0].read_text(encoding="utf-8"))["status"] == "FAILED"
+        assert await storage.current_revision() == 1
     finally:
         await database.dispose()
 

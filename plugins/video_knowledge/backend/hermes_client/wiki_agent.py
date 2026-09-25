@@ -40,6 +40,13 @@ class WikiAgentError(RuntimeError):
     retryable = False
 
 
+class WikiAgentIncompleteError(WikiAgentError):
+    """A model turn ended without a validated submit; a fresh turn may recover."""
+
+    code = "WIKI_AGENT_INCOMPLETE"
+    retryable = True
+
+
 @dataclass(frozen=True)
 class WikiAgentResult:
     run_id: str
@@ -509,7 +516,9 @@ class WikiAgentAdapter:
         try:
             await asyncio.to_thread(run_agent)
             if result is None:
-                raise WikiAgentError("Hermes did not submit a Wiki change set")
+                raise WikiAgentIncompleteError(
+                    "Hermes did not submit a Wiki change set"
+                )
             audit["status"] = "SUCCEEDED"
             return result
         except Exception as exc:
