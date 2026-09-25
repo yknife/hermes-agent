@@ -47,6 +47,13 @@ class WikiAgentIncompleteError(WikiAgentError):
     retryable = True
 
 
+class WikiAgentTimeoutError(WikiAgentError):
+    """The model timed out before a validated change set was submitted."""
+
+    code = "WIKI_AGENT_TIMEOUT"
+    retryable = True
+
+
 @dataclass(frozen=True)
 class WikiAgentResult:
     run_id: str
@@ -101,9 +108,78 @@ TOOLS = [
     ),
     _tool(
         "wiki_submit_changes",
-        "Submit at most three evidence-backed concept, entity or comparison "
-        "pages. The application validates claims and commits index and log.",
-        {"pages": {"type": "array", "items": {"type": "object"}}},
+        "Submit at most three evidence-backed pages, or pages=[] when there "
+        "is no supported claim. Every submitted evidence source_revision must "
+        "first be read with wiki_read_source in this run. A comparison page "
+        "requires two independent cited media/session sources; use a concept "
+        "or entity page for one source. The application validates claims and "
+        "commits index and log.",
+        {
+            "pages": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "enum": ["concept", "entity", "comparison"],
+                        },
+                        "title": {"type": "string"},
+                        "page_id": {"type": "string"},
+                        "aliases": {"type": "array", "items": {"type": "string"}},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "related_page_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "core_to_source": {"type": "boolean"},
+                        "claims": {
+                            "type": "array",
+                            "maxItems": 12,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "text": {"type": "string"},
+                                    "kind": {
+                                        "type": "string",
+                                        "enum": ["fact", "opinion", "inference"],
+                                    },
+                                    "contested": {"type": "boolean"},
+                                    "evidence": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "source_revision": {"type": "string"},
+                                                "media_id": {"type": "string"},
+                                                "transcript_id": {"type": "string"},
+                                                "segment_ids": {
+                                                    "type": "array",
+                                                    "items": {"type": "string"},
+                                                },
+                                                "start_ms": {"type": "integer"},
+                                                "end_ms": {"type": "integer"},
+                                            },
+                                            "required": [
+                                                "source_revision",
+                                                "media_id",
+                                                "transcript_id",
+                                                "segment_ids",
+                                                "start_ms",
+                                                "end_ms",
+                                            ],
+                                        },
+                                    },
+                                },
+                                "required": ["text", "kind", "evidence"],
+                            },
+                        },
+                    },
+                    "required": ["type", "title", "claims"],
+                },
+            }
+        },
         ["pages"],
     ),
 ]
@@ -209,7 +285,16 @@ class WikiAgentAdapter:
             "aliases, tags, optional page_id, related_page_ids for existing pages, "
             "core_to_source, and claims. Each claim "
             "needs text, kind, contested, and evidence with source_revision, "
-            "media_id, transcript_id, segment_ids, start_ms and end_ms."
+            "media_id, transcript_id, segment_ids, start_ms and end_ms. "
+            "Every source_revision in a submitted evidence item MUST first be "
+            "read through wiki_read_source in this run. Existing page claims "
+            "are retained by the application, so submit only new claims. "
+            "Prefer one focused page with at most three concise new claims "
+            "per turn to keep the tool response complete. A "
+            "comparison page needs claims from at least two independent cited "
+            "media or live sessions; for one source choose concept or entity. "
+            "You MUST call wiki_submit_changes, including pages=[] when no "
+            "supported page is possible. Final prose alone is not accepted."
         )
         message = build_skill_invocation_message(
             "/llm-wiki",
@@ -274,6 +359,7 @@ class WikiAgentAdapter:
         oriented = False
         calls = 0
         result: WikiAgentResult | None = None
+        last_rejection: str | None = None
         loop = asyncio.get_running_loop()
 
         async def execute(name: str, args: dict) -> dict:
@@ -450,6 +536,7 @@ class WikiAgentAdapter:
 
             def handler(name: str):
                 def bound(args: dict, **kwargs: Any) -> str:
+                    nonlocal last_rejection
                     if kwargs.get("session_id") != run_id:
                         return json.dumps({"error": "Wiki run identity mismatch"})
                     try:
@@ -464,11 +551,19 @@ class WikiAgentAdapter:
                         WikiConflictError,
                         TimeoutError,
                     ) as exc:
-                        events.append({
+                        event = {
                             "tool": name,
                             "status": "error",
                             "code": type(exc).__name__,
-                        })
+                        }
+                        if name == "wiki_submit_changes" and isinstance(
+                            exc, (WikiStorageError, WikiConflictError)
+                        ):
+                            # These domain errors contain fixed validation
+                            # messages, never source text or credentials.
+                            last_rejection = str(exc)
+                            event["reason"] = last_rejection
+                        events.append(event)
                         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
                 return bound
@@ -491,7 +586,7 @@ class WikiAgentAdapter:
                         provider=self.provider,
                         enabled_toolsets=["vkc_wiki_only"],
                         max_iterations=MAX_CALLS + 2,
-                        max_tokens=4096,
+                        max_tokens=8192,
                         quiet_mode=True,
                         skip_context_files=True,
                         skip_memory=True,
@@ -518,14 +613,21 @@ class WikiAgentAdapter:
             if result is None:
                 raise WikiAgentIncompleteError(
                     "Hermes did not submit a Wiki change set"
+                    + (f"; last rejection: {last_rejection}" if last_rejection else "")
                 )
             audit["status"] = "SUCCEEDED"
             return result
         except Exception as exc:
             audit["status"] = "FAILED"
-            audit["error_code"] = type(exc).__name__
+            audit["error_code"] = (
+                WikiAgentTimeoutError.code
+                if isinstance(exc, TimeoutError)
+                else type(exc).__name__
+            )
             if isinstance(exc, WikiAgentError):
                 raise
+            if isinstance(exc, TimeoutError):
+                raise WikiAgentTimeoutError("Hermes Wiki ingest timed out") from exc
             raise WikiAgentError("Hermes Wiki ingest failed") from exc
         finally:
             audit["duration_ms"] = round((time.monotonic() - started) * 1000)

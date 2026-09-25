@@ -382,6 +382,22 @@ class WikiStorageService:
                 return None
         return self._page_from_projection(row)
 
+    async def read_pages(self, page_ids: list[str]) -> dict[str, WikiPage]:
+        """Load selected committed snapshots with one projection query."""
+        if not page_ids:
+            return {}
+        catalog = await self._catalog()
+        async with self.database.session() as session:
+            rows = (
+                await session.scalars(
+                    select(WikiPageProjection).where(
+                        WikiPageProjection.wiki_id == catalog.id,
+                        WikiPageProjection.page_id.in_(page_ids),
+                    )
+                )
+            ).all()
+        return {row.page_id: self._page_from_projection(row) for row in rows}
+
     async def commit_pages(
         self,
         changes: dict[str, str],

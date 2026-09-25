@@ -5,6 +5,7 @@ from __future__ import annotations
 import posixpath
 import re
 import unicodedata
+from collections import OrderedDict
 from pathlib import Path
 
 import yaml
@@ -25,6 +26,9 @@ from plugins.video_knowledge.backend.app.services.wiki_storage_service import (
 )
 
 WORD = re.compile(r"[\u3400-\u9fff]+|[a-z0-9]+", re.IGNORECASE)
+_LINK_CACHE: OrderedDict[
+    tuple[str, str, int], tuple[dict[str, list[dict]], dict[str, list[str]]]
+] = OrderedDict()
 
 
 def _normalized(value: str) -> str:
@@ -93,39 +97,52 @@ class WikiReadService:
     async def page(self, page_id: str) -> dict | None:
         if not self.initialized():
             return None
-        pages = await self.storage.list_pages()
-        current = next((page for page in pages if page.page_id == page_id), None)
+        current = await self.storage.read_page(page_id)
         if current is None:
             return None
         front, body = _parts(current)
-        by_path = {page.relative_path: page for page in pages}
-
-        def links(page: WikiPage) -> list[dict]:
-            _metadata, page_body = _parts(page)
-            result = []
-            for match in LINK.finditer(page_body):
-                href = match.group(1).split("#", 1)[0].split("?", 1)[0]
-                if not href or ":" in href or href.startswith("/") or "\\" in href:
-                    continue
-                relative = posixpath.normpath(
-                    posixpath.join(posixpath.dirname(page.relative_path), href)
-                )
-                target = by_path.get(relative)
-                if target is not None:
-                    result.append({
-                        "href": match.group(1),
-                        "page_id": target.page_id,
-                        "title": target.title,
-                    })
-            return result
-
-        outgoing = links(current)
-        backlinks = [
-            _summary(page)
-            for page in pages
-            if page.page_id != page_id
-            and any(link["page_id"] == page_id for link in links(page))
-        ]
+        catalog = await self.storage._catalog()
+        key = (str(self.storage.root), catalog.id, catalog.revision)
+        cached = _LINK_CACHE.get(key)
+        if cached is None:
+            pages = await self.storage.list_pages()
+            by_path = {page.relative_path: page for page in pages}
+            outgoing_by_id: dict[str, list[dict]] = {}
+            incoming_by_id: dict[str, list[str]] = {}
+            for source in pages:
+                page_body = source.content.split("\n---\n", 1)[1]
+                links = []
+                for match in LINK.finditer(page_body):
+                    href = match.group(1).split("#", 1)[0].split("?", 1)[0]
+                    if not href or ":" in href or href.startswith("/") or "\\" in href:
+                        continue
+                    relative = posixpath.normpath(
+                        posixpath.join(posixpath.dirname(source.relative_path), href)
+                    )
+                    target = by_path.get(relative)
+                    if target is not None:
+                        links.append({
+                            "href": match.group(1),
+                            "page_id": target.page_id,
+                            "title": target.title,
+                        })
+                        if source.page_id != target.page_id:
+                            incoming_by_id.setdefault(target.page_id, []).append(
+                                source.page_id
+                            )
+                outgoing_by_id[source.page_id] = links
+            cached = (outgoing_by_id, incoming_by_id)
+            _LINK_CACHE[key] = cached
+            if len(_LINK_CACHE) > 8:
+                _LINK_CACHE.popitem(last=False)
+        else:
+            _LINK_CACHE.move_to_end(key)
+        outgoing = cached[0].get(page_id, [])
+        backlinks = []
+        for source_id in dict.fromkeys(cached[1].get(page_id, [])):
+            source = await self.storage.read_page(source_id)
+            if source is not None:
+                backlinks.append(_summary(source))
         return {
             **_summary(current),
             "body": body,
@@ -226,8 +243,8 @@ class WikiReadService:
                 .scalars()
                 .all()
             )
-        pages = {page.page_id: page for page in await self.storage.list_pages()}
         terms = [match.group() for match in WORD.finditer(_normalized(query))]
+        pages = await self.storage.read_pages(ids)
         items = []
         for page_id in ids:
             page = pages.get(page_id)

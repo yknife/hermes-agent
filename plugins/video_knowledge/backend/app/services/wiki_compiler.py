@@ -74,8 +74,10 @@ class WikiCompiler:
             raise WikiStorageError("Fusion cites a nonexistent segment") from exc
         start = min(segment["start_ms"] for segment in selected)
         end = max(segment["end_ms"] for segment in selected)
-        if raw.get("start_ms") != start or raw.get("end_ms") != end:
-            raise WikiStorageError("Fusion citation time range mismatch")
+        # Segment IDs are the evidence identity. Use the transcript's exact
+        # interval rather than accepting model-generated millisecond values;
+        # a model can cite the right IDs while rounding or copying the wrong
+        # timestamps. The published reference must always match the source.
         return {
             "source_revision": revision,
             "media_id": source.media_id,

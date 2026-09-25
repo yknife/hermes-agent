@@ -429,6 +429,39 @@ async def test_invalid_evidence_and_markup_do_not_change_page(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_fusion_evidence_uses_transcript_times_for_real_segment_ids(
+    tmp_path: Path,
+) -> None:
+    database, storage, _video, sources = await _sources(tmp_path, ("A",))
+    try:
+        source = sources["A"]
+        proposal = _proposal(source)
+        evidence = proposal["pages"][0]["claims"][0]["evidence"][0]
+        evidence["start_ms"] = 1
+        evidence["end_ms"] = 2
+        changes = await WikiCompiler(storage).compile(
+            proposal,
+            {source.source_revision: source},
+            skill_sha256="test",
+            run_id="canonical-time",
+        )
+        front = yaml.safe_load(next(iter(changes.values())).split("\n---\n", 1)[0][4:])
+        reference = front["citation_refs"][0]
+        segment = next(
+            item
+            for item in source.transcript["segments"]
+            if item["id"] == evidence["segment_ids"][0]
+        )
+        assert (reference["start_ms"], reference["end_ms"]) == (
+            segment["start_ms"],
+            segment["end_ms"],
+        )
+        assert (reference["start_ms"], reference["end_ms"]) != (1, 2)
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_live_parts_do_not_count_as_independent_sources(tmp_path: Path) -> None:
     database, storage, _video, sources = await _sources(tmp_path, ("L1", "L2"))
     try:
@@ -577,6 +610,62 @@ async def test_model_turn_without_valid_submit_is_retryable(
         reports = list(storage._path("_meta/reports").glob("wr_*.json"))
         assert len(reports) == 1
         assert json.loads(reports[0].read_text(encoding="utf-8"))["status"] == "FAILED"
+        assert await storage.current_revision() == 1
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_rejected_change_set_reports_validation_reason_without_committing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import json
+
+    import run_agent
+    from tools.registry import registry
+
+    database, storage, _video, sources = await _sources(tmp_path, ("A",))
+
+    class RejectedAgent:
+        def __init__(self, **kwargs):
+            assert kwargs["max_tokens"] == 8192
+            self.session_estimated_cost_usd = 0.0
+
+        def run_conversation(self, _message, *, task_id):
+            orientation = registry.get_entry("wiki_read_orientation")
+            assert orientation is not None
+            orientation.handler({}, session_id=task_id)
+            submit = registry.get_entry("wiki_submit_changes")
+            assert submit is not None
+            reply = submit.handler(
+                {"pages": [{"type": "unsupported"}]}, session_id=task_id
+            )
+            assert "Invalid fusion page type" in reply
+            return {"api_calls": 1, "final_response": ""}
+
+    try:
+        monkeypatch.setattr(run_agent, "AIAgent", RejectedAgent)
+        monkeypatch.setattr(
+            WikiAgentAdapter,
+            "_load_skill",
+            staticmethod(lambda *_args: ("pinned fixture skill", SKILL_SHA256)),
+        )
+        source = sources["A"]
+        adapter = WikiAgentAdapter(storage, model="fixture-model", provider="custom")
+        with pytest.raises(
+            WikiAgentIncompleteError,
+            match="last rejection: Invalid fusion page type",
+        ):
+            await adapter.run_ingest(source.media_id, source.source_revision)
+        reports = list(storage._path("_meta/reports").glob("wr_*.json"))
+        audit = json.loads(reports[0].read_text(encoding="utf-8"))
+        assert audit["status"] == "FAILED"
+        assert {
+            "tool": "wiki_submit_changes",
+            "status": "error",
+            "code": "WikiStorageError",
+            "reason": "Invalid fusion page type",
+        } in audit["events"]
         assert await storage.current_revision() == 1
     finally:
         await database.dispose()
