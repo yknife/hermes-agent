@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import type { WikiPage } from './types'
 
 const LINK = /(!?)\[([^\]]+)\]\(([^)\s]+)\)/g
+const STRONG = /(?<!\\)\*\*(?=[^\s.,，。；;：:!?！？])(.+?)(?<=\S)\*\*/g
 const RAW_CITATION = /^\.\.\/raw\/videos\/[^/]+\/(sr_[a-f0-9]{64})\/transcript\.md#segment-([^/?#]+)$/
 
 function displayText(value: string): string {
@@ -12,6 +13,32 @@ function displayText(value: string): string {
     .replace(/&gt;/g, '>')
     .replace(/\\\[/g, '[')
     .replace(/\\\]/g, ']')
+}
+
+function formattedText(value: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = []
+  let previous = 0
+
+  for (const match of value.matchAll(STRONG)) {
+    const index = match.index ?? 0
+
+    if (index > previous) {
+      nodes.push(displayText(value.slice(previous, index)))
+    }
+
+    nodes.push(
+      <strong className="font-semibold" key={`${keyPrefix}-${index}`}>
+        {displayText(match[1])}
+      </strong>
+    )
+    previous = index + match[0].length
+  }
+
+  if (previous < value.length) {
+    nodes.push(displayText(value.slice(previous)))
+  }
+
+  return nodes
 }
 
 export function resolveWikiLink(
@@ -57,7 +84,7 @@ function inline(
     const index = match.index ?? 0
 
     if (index > previous) {
-      nodes.push(displayText(value.slice(previous, index)))
+      nodes.push(...formattedText(value.slice(previous, index), `${previous}-${index}`))
     }
 
     const [, image, label, href] = match
@@ -71,13 +98,13 @@ function inline(
           onClick={() => (target.kind === 'page' ? onPage(target.id) : onCitation(target.id))}
           type="button"
         >
-          {displayText(label)}
+          {formattedText(label, `${index}-${href}`)}
         </button>
       )
     } else {
       nodes.push(
         <span className="text-muted-foreground" key={`${index}-${href}`} title="此链接不能在知识库中打开">
-          {displayText(label)}
+          {formattedText(label, `${index}-${href}`)}
         </span>
       )
     }
@@ -86,7 +113,7 @@ function inline(
   }
 
   if (previous < value.length) {
-    nodes.push(displayText(value.slice(previous)))
+    nodes.push(...formattedText(value.slice(previous), `${previous}-${value.length}`))
   }
 
   return nodes

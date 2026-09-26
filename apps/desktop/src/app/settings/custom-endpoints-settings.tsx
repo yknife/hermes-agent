@@ -136,7 +136,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       }
 
       if (saved && saved.is_current) {
-        onMainModelChanged?.(saved.id, saved.model)
+        onMainModelChanged?.(response.current.provider, saved.model)
       }
 
       triggerHaptic('success')

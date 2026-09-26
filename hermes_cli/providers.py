@@ -797,6 +797,14 @@ def custom_provider_slug(display_name: str, provider_key: str = "") -> str:
     return normalized if normalized.startswith("custom:") else f"custom:{normalized}"
 
 
+def custom_endpoint_provider_id(provider_key: str) -> str:
+    """Keep saved endpoints distinct from canonical built-in providers."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    key = provider_key.strip().lower()
+    return custom_provider_slug(key) if key in PROVIDER_REGISTRY else key
+
+
 def custom_provider_aliases(
     display_name: str,
     provider_key: str = "",

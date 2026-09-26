@@ -1841,6 +1841,25 @@ class TestWebServerEndpoints:
         assert endpoint["has_api_key"] is True
         assert "sk-in-env" not in (endpoint["api_key_preview"] or "")
 
+    def test_custom_endpoint_builtin_name_uses_explicit_identity(self):
+        from hermes_cli.config import load_config
+
+        response = self.client.post("/api/providers/custom-endpoints", json={
+            "id": "deepseek", "name": "DeepSeek",
+            "base_url": "https://api.deepseek.com/v1",
+            "model": "deepseek-flash", "api_key": "new-test-key",
+            "make_default": True,
+        })
+        assert response.status_code == 200
+        assert response.json()["current"]["provider"] == "custom:deepseek"
+        assert next(e for e in response.json()["endpoints"] if e["id"] == "deepseek")["is_current"]
+        activated = self.client.post("/api/providers/custom-endpoints/deepseek/activate", json={})
+        assert activated.json()["provider"] == "custom:deepseek"
+        assert load_config()["model"]["key_env"] == "HERMES_CUSTOM_DEEPSEEK_API_KEY"
+        deleted = self.client.delete("/api/providers/custom-endpoints/deepseek")
+        assert deleted.status_code == 200
+        assert "key_env" not in load_config()["model"]
+
     def test_activating_an_endpoint_carries_its_credential_either_way(self):
         """Activate must work for both key_env and pre-#69449 plaintext entries."""
         from hermes_cli.config import load_config, save_config

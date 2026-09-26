@@ -26,6 +26,40 @@ def _no_live_builtin_provider_probes(monkeypatch):
 # Tests for list_authenticated_providers including full models list
 # =============================================================================
 
+
+@pytest.mark.parametrize("builtin_key", ["", "old-builtin-key"])
+def test_saved_endpoint_with_builtin_name_keeps_its_own_picker_identity(monkeypatch, builtin_key):
+    from hermes_cli.config import get_compatible_custom_providers
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setenv("DEEPSEEK_API_KEY", builtin_key)
+    monkeypatch.setenv("SAVED_DEEPSEEK_KEY", "new-endpoint-key")
+    cfg = {"providers": {"deepseek": {
+        "name": "deepseek",
+        "base_url": "https://api.deepseek.com/v1",
+        "key_env": "SAVED_DEEPSEEK_KEY",
+        "model": "deepseek-flash",
+        "discover_models": False,
+    }}}
+    rows = list_authenticated_providers(
+        current_provider="custom:deepseek",
+        user_providers=cfg["providers"],
+        custom_providers=get_compatible_custom_providers(cfg),
+        probe_custom_providers=False,
+    )
+    custom = [row for row in rows if row["slug"] == "custom:deepseek"]
+    assert len(custom) == 1
+    assert custom[0]["models"] == ["deepseek-flash"]
+    assert custom[0]["is_current"]
+    assert "Custom" in custom[0]["name"]
+    monkeypatch.setattr(rp, "load_config", lambda: cfg)
+    monkeypatch.setattr(rp, "_getenv", lambda key, default="": {
+        "SAVED_DEEPSEEK_KEY": "new-endpoint-key", "DEEPSEEK_API_KEY": builtin_key,
+    }.get(key, default))
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *args, **kwargs: None)
+    runtime = rp._resolve_named_custom_runtime(requested_provider=custom[0]["slug"])
+    assert runtime["api_key"] == "new-endpoint-key"
+
 def test_list_authenticated_providers_includes_full_models_list_from_user_providers(monkeypatch):
     """User-defined providers should expose both default_model and full models list.
     

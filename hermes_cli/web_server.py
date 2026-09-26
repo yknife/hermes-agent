@@ -101,6 +101,7 @@ from gateway.status import (
     resolve_gateway_liveness,
 )
 from utils import env_var_enabled
+from hermes_cli.providers import custom_endpoint_provider_id
 
 try:
     from fastapi import (
@@ -8300,7 +8301,7 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "discover_models": bool(raw_entry.get("discover_models", True)),
                 "has_api_key": has_api_key,
                 "api_key_preview": api_key_preview,
-                "is_current": endpoint_id == current_provider,
+                "is_current": custom_endpoint_provider_id(endpoint_id) == current_provider,
                 "source": "providers",
             })
 
@@ -8353,7 +8354,9 @@ def _detach_main_model_from_provider(cfg: Dict[str, Any], provider_key: str) -> 
     model_cfg = cfg.get("model")
     if not isinstance(model_cfg, dict):
         return
-    if str(model_cfg.get("provider") or "").strip().lower() != provider_key:
+    if str(model_cfg.get("provider") or "").strip().lower() not in {
+        provider_key, custom_endpoint_provider_id(provider_key)
+    }:
         return
     for field in ("provider", "base_url", "api_key", "key_env"):
         model_cfg.pop(field, None)
@@ -8452,7 +8455,7 @@ def _write_custom_endpoint(
 
     if body.make_default:
         cfg["model"] = _apply_main_model_assignment(
-            cfg.get("model", {}), endpoint_id, model, base_url
+            cfg.get("model", {}), custom_endpoint_provider_id(endpoint_id), model, base_url
         )
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
@@ -8520,7 +8523,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 )
 
             model_cfg = _apply_main_model_assignment(
-                cfg.get("model", {}), provider_key, model, base_url
+                cfg.get("model", {}), custom_endpoint_provider_id(provider_key), model, base_url
             )
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
@@ -8529,7 +8532,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
                 model_cfg["api_key"] = entry["api_key"]
             cfg["model"] = model_cfg
             save_config(cfg)
-        return {"ok": True, "provider": provider_key, "model": model}
+        return {"ok": True, "provider": custom_endpoint_provider_id(provider_key), "model": model}
     except HTTPException:
         raise
     except Exception:

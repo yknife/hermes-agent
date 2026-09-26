@@ -35,6 +35,37 @@ const page: WikiPage = {
 }
 
 describe('WikiMarkdown', () => {
+  it('renders knowledge labels as bold text alongside verified citations', () => {
+    const knowledgePage = {
+      ...page,
+      body: `- **材料事实**：材料事实（本次来源）；**推断·存在争议**：待核实 [证据 10.000s](../raw/videos/a/${revision}/transcript.md#segment-s1)`
+    }
+
+    const onCitation = vi.fn()
+
+    const { container } = render(
+      <WikiMarkdown onCitation={onCitation} onPage={() => undefined} page={knowledgePage} />
+    )
+
+    expect(screen.getByText('材料事实', { selector: 'strong' }).className).toContain('font-semibold')
+    expect(screen.getByText('推断·存在争议', { selector: 'strong' }).className).toContain('font-semibold')
+    expect(container.textContent).not.toContain('**')
+    fireEvent.click(screen.getByRole('button', { name: '证据 10.000s' }))
+    expect(onCitation).toHaveBeenCalledWith('章节-1')
+  })
+
+  it('keeps escaped or incomplete bold markers as text', () => {
+    const knowledgePage = { ...page, body: '\\**保留星号**，**未闭合' }
+
+    const html = renderToStaticMarkup(
+      <WikiMarkdown onCitation={() => undefined} onPage={() => undefined} page={knowledgePage} />
+    )
+
+    expect(html).not.toContain('<strong')
+    expect(html).toContain('**保留星号**')
+    expect(html).toContain('**未闭合')
+  })
+
   it('only activates known pages and verified citations', () => {
     expect(resolveWikiLink(page, 'javascript:alert(1)', '恶意')).toBeNull()
     expect(resolveWikiLink(page, '../sessions/live.md', '目录')).toEqual({ id: 'session_live', kind: 'page' })
@@ -45,11 +76,14 @@ describe('WikiMarkdown', () => {
   })
 
   it('renders raw HTML and unsafe links as inert text', () => {
+    const unsafePage = { ...page, body: `${page.body}\n**<script>alert(2)</script>**` }
+
     const html = renderToStaticMarkup(
-      <WikiMarkdown onCitation={() => undefined} onPage={() => undefined} page={page} />
+      <WikiMarkdown onCitation={() => undefined} onPage={() => undefined} page={unsafePage} />
     )
 
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+    expect(html).toContain('<strong class="font-semibold">&lt;script&gt;alert(2)&lt;/script&gt;</strong>')
     expect(html).not.toContain('<script>')
     expect(html).not.toContain('href="javascript:')
     expect(html).not.toContain('<img')

@@ -576,12 +576,12 @@ export function WikiView({
                   }}
                   type="button"
                 >
-                  <div className="truncate text-xs font-medium">{item.title}</div>
-                  <div className="mt-1 flex items-center gap-2 text-[0.68rem] text-muted-foreground">
+                  <div className="wrap-anywhere text-xs leading-5 font-medium whitespace-normal">{item.title}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.68rem] text-muted-foreground">
                     <span>{item.type}</span>
                     <span>修订 {item.revision}</span>
                     {item.tags.map(value => (
-                      <span key={value}>{value}</span>
+                      <span className="wrap-anywhere" key={value}>{value}</span>
                     ))}
                   </div>
                   {'excerpt' in item && typeof item.excerpt === 'string' && (

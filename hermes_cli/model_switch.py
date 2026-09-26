@@ -3210,6 +3210,7 @@ def list_authenticated_providers(
         from collections import OrderedDict as _OD3
 
         from hermes_cli.config import is_provider_enabled
+        from hermes_cli.providers import custom_endpoint_provider_id
 
         ep_groups: "_OD3[tuple, dict]" = _OD3()
         for ep_name, ep_cfg in user_providers.items():
@@ -3219,7 +3220,8 @@ def list_authenticated_providers(
             # config — these are hidden from the picker.
             if not is_provider_enabled(ep_cfg):
                 continue
-            if ep_name.lower() in seen_slugs:
+            endpoint_slug = custom_endpoint_provider_id(ep_name)
+            if endpoint_slug in seen_slugs:
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
             api_url = (
@@ -3291,7 +3293,9 @@ def list_authenticated_providers(
                         break
                 if _cut_at is not None and _cut_at >= 2:
                     grp_display = " ".join(_toks[:_cut_at]).strip()
-                grp_slug = ep_name  # primary slug is the first ep_name encountered
+                grp_slug = endpoint_slug
+                if endpoint_slug != ep_name.lower():
+                    grp_display = f"{grp_display} (Custom)"
                 ep_groups[group_key] = {
                     "slug": grp_slug,
                     "name": grp_display or display_name,
@@ -3323,9 +3327,10 @@ def list_authenticated_providers(
             ):
                 ep_groups[group_key]["has_explicit_models"] = True
             ep_groups[group_key]["raw_names"].append(display_name)
-            ep_groups[group_key]["aliases"].update(
-                custom_provider_aliases(display_name, str(ep_name))
-            )
+            aliases = custom_provider_aliases(display_name, str(ep_name))
+            if endpoint_slug != ep_name.lower():
+                aliases = {alias for alias in aliases if alias.startswith("custom:")}
+            ep_groups[group_key]["aliases"].update(aliases)
 
         for grp in ep_groups.values():
             ep_cfg = grp["ep_cfg"]

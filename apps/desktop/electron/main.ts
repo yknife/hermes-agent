@@ -46,6 +46,7 @@ import {
   verifyHermesCli
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import { interruptedLocalRequestError, retryInterruptedLocalRead } from './backend-request-retry'
 import {
   isRetryableRemoteBootFailure,
   shouldLatchBackendStartFailure,
@@ -13612,9 +13613,11 @@ async function handleHermesApiRequest(request) {
     : resolveRouteProfile(tornDownProfile, apiRoute.backendProfile)
 
   let response
+  let requestBaseUrl: string | null = null
 
   try {
     const connection = await ensureBackend(routeProfile)
+    requestBaseUrl = connection.baseUrl
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
     const url = `${connection.baseUrl}${apiRoute.requestPath}`
@@ -13655,12 +13658,18 @@ async function handleHermesApiRequest(request) {
         })
       }
     } else {
-      response = await fetchJson(url, connection.token, {
-        method: request?.method,
-        body: request?.body,
-        upload: request?.upload,
-        timeoutMs
-      })
+      response = await retryInterruptedLocalRead(
+        request,
+        connection,
+        candidate =>
+          fetchJson(`${candidate.baseUrl}${apiRoute.requestPath}`, candidate.token, {
+            method: request?.method,
+            body: request?.body,
+            upload: request?.upload,
+            timeoutMs
+          }),
+        () => ensureBackend(routeProfile)
+      )
     }
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
@@ -13673,7 +13682,7 @@ async function handleHermesApiRequest(request) {
       }
     }
 
-    throw error
+    throw interruptedLocalRequestError(request, error, requestBaseUrl) || error
   }
 
   await profileRename?.complete()
