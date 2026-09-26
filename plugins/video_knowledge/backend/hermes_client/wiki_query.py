@@ -37,7 +37,8 @@ QUERY_TOOLS = [
     _tool("wiki_query_orientation", "Read SCHEMA, index and recent log", {}, []),
     _tool(
         "wiki_search",
-        "Search this Wiki for relevant pages",
+        "Search with one short keyword at a time; multiple terms require ALL to match. "
+        "Use at most 8 searches, then read relevant pages and original evidence.",
         {"query": {"type": "string"}},
         ["query"],
     ),
@@ -63,12 +64,54 @@ QUERY_TOOLS = [
         {
             "answer": {"type": "string"},
             "insufficient_evidence": {"type": "boolean"},
-            "citations": {"type": "array", "items": {"type": "object"}},
+            "citations": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "page_id": {"type": "string"},
+                        "page_revision": {"type": "integer"},
+                        "source_revision": {"type": "string"},
+                        "media_id": {"type": "string"},
+                        "transcript_id": {"type": "string"},
+                        "segment_ids": {"type": "array", "items": {"type": "string"}},
+                        "start_ms": {"type": "integer"},
+                        "end_ms": {"type": "integer"},
+                    },
+                    "required": [
+                        "page_id",
+                        "page_revision",
+                        "source_revision",
+                        "media_id",
+                        "transcript_id",
+                        "segment_ids",
+                        "start_ms",
+                        "end_ms",
+                    ],
+                    "additionalProperties": False,
+                },
+            },
         },
         ["answer", "insufficient_evidence", "citations"],
     ),
 ]
 MAX_QUERY_CALLS = 40
+MAX_SEARCH_CALLS = 8
+
+
+class WikiQueryIncompleteError(WikiAgentError):
+    """Safe, actionable failure details for the outer Chat agent."""
+
+    def __init__(self, run_id: str, *, budget_exhausted: bool) -> None:
+        self.run_id = run_id
+        self.code = "WIKI_QUERY_BUDGET" if budget_exhausted else "WIKI_QUERY_INCOMPLETE"
+        reason = (
+            "Research budget exhausted before a valid answer was submitted."
+            if budget_exhausted
+            else "The model did not submit an answer with valid evidence."
+        )
+        super().__init__(reason)
 
 
 class WikiQueryAdapter:
@@ -90,7 +133,7 @@ class WikiQueryAdapter:
         self.model = model or str(configured.get("default") or "")
         self.provider = provider or str(configured.get("provider") or "")
 
-    async def run(self, question: str) -> dict:
+    async def run(self, question: str, *, origin_session_id: str | None = None) -> dict:
         question = question.strip()
         if not question or len(question) > 500:
             raise WikiStorageError("Wiki question must contain 1-500 characters")
@@ -117,9 +160,13 @@ class WikiQueryAdapter:
             "events": events,
             "status": "RUNNING",
         }
+        if origin_session_id:
+            audit["origin_session_id"] = origin_session_id
         oriented = False
         searched = False
         calls = 0
+        searches = 0
+        budget_exhausted = False
         read_pages: dict[str, Any] = {}
         sources: dict[str, WikiSourceSnapshot] = {}
         seen_segments: set[tuple[str, str]] = set()
@@ -127,10 +174,23 @@ class WikiQueryAdapter:
         loop = asyncio.get_running_loop()
 
         async def execute(name: str, args: dict) -> dict:
-            nonlocal oriented, searched, calls, answer
-            calls += 1
-            if calls > MAX_QUERY_CALLS:
-                raise WikiAgentError("Wiki query tool budget exceeded")
+            nonlocal oriented, searched, calls, searches, answer, budget_exhausted
+            # Submission must remain available after research is exhausted.
+            if name != "wiki_submit_answer":
+                if name == "wiki_search" and searches >= MAX_SEARCH_CALLS:
+                    budget_exhausted = True
+                    raise WikiAgentError(
+                        "Search budget exhausted. Do not search again; read pages and "
+                        "evidence already found, then submit. If unsupported, submit "
+                        "insufficient_evidence=true with citations=[]."
+                    )
+                if calls >= MAX_QUERY_CALLS:
+                    budget_exhausted = True
+                    raise WikiAgentError(
+                        "Read budget exhausted. Call wiki_submit_answer now with verified "
+                        "evidence, or insufficient_evidence=true and citations=[]."
+                    )
+                calls += 1
             if name == "wiki_query_orientation":
                 schema = self.storage._path("SCHEMA.md").read_text(encoding="utf-8")
                 index, log = await self.storage.read_navigation()
@@ -152,6 +212,7 @@ class WikiQueryAdapter:
             if not oriented:
                 raise WikiAgentError("Read Wiki orientation before knowledge tools")
             if name == "wiki_search":
+                searches += 1
                 phrase = str(args.get("query") or "").strip()[:100]
                 searched = True
                 result = await self.reader.search(phrase)
@@ -328,13 +389,30 @@ class WikiQueryAdapter:
                             execute(name, args), loop
                         ).result(timeout=180)
                         events.append({"tool": name, "status": "ok"})
+                        if name != "wiki_submit_answer":
+                            result["budget"] = {
+                                "reads_remaining": MAX_QUERY_CALLS - calls,
+                                "searches_remaining": MAX_SEARCH_CALLS - searches,
+                                "instruction": (
+                                    "Reserve reads for original evidence. Submit once supported; "
+                                    "if unsupported, submit insufficient_evidence=true. "
+                                    "Submission remains available when reads run out."
+                                ),
+                            }
                         return json.dumps(result, ensure_ascii=False)
                     except (WikiAgentError, WikiStorageError, TimeoutError) as exc:
-                        events.append({
+                        event = {
                             "tool": name,
                             "status": "error",
                             "code": type(exc).__name__,
-                        })
+                        }
+                        # These checks have fixed messages, with no source text or secrets.
+                        if isinstance(exc, WikiAgentError) or (
+                            name == "wiki_submit_answer"
+                            and isinstance(exc, WikiStorageError)
+                        ):
+                            event["reason"] = str(exc)
+                        events.append(event)
                         return json.dumps({"error": str(exc)}, ensure_ascii=False)
 
                 return bound
@@ -376,7 +454,9 @@ class WikiQueryAdapter:
         try:
             await asyncio.to_thread(run_agent)
             if answer is None:
-                raise WikiAgentError("Hermes did not submit a grounded Wiki answer")
+                raise WikiQueryIncompleteError(
+                    run_id, budget_exhausted=budget_exhausted
+                )
             encoded = json.dumps(answer, ensure_ascii=False).encode("utf-8")
             _write_durable(
                 query_run_path(self.storage.storage_root, catalog.id, run_id, "answer"),
@@ -389,6 +469,9 @@ class WikiQueryAdapter:
         except Exception as exc:
             audit["status"] = "FAILED"
             audit["error_code"] = type(exc).__name__
+            if isinstance(exc, WikiQueryIncompleteError):
+                audit["error_code"] = exc.code
+                audit["error_message"] = str(exc)
             if isinstance(exc, WikiAgentError):
                 raise
             raise WikiAgentError("Hermes Wiki query failed") from exc

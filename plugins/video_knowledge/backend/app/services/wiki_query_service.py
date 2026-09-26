@@ -43,14 +43,16 @@ class WikiQueryService:
         self.storage = WikiStorageService(database, storage_root)
         self.video = WikiVideoService(database, self.storage)
 
-    async def ask(self, question: str) -> dict:
+    async def ask(self, question: str, *, origin_session_id: str | None = None) -> dict:
         from plugins.video_knowledge.backend.hermes_client.wiki_query import (
             WikiQueryAdapter,
         )
 
-        return await WikiQueryAdapter(self.storage).run(question)
+        return await WikiQueryAdapter(self.storage).run(
+            question, origin_session_id=origin_session_id
+        )
 
-    async def save(self, run_id: str) -> dict:
+    async def save(self, run_id: str, *, origin_session_id: str | None = None) -> dict:
         if not re.fullmatch(r"wq_[0-9a-f]{32}", run_id):
             raise WikiStorageError("Invalid Wiki query run ID")
         catalog = await self.storage._catalog()
@@ -67,6 +69,8 @@ class WikiQueryService:
         if not audit_path.is_file():
             raise WikiStorageError("Wiki query audit is unavailable")
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if origin_session_id and audit.get("origin_session_id") != origin_session_id:
+            raise WikiStorageError("Wiki query belongs to another chat session")
         if (
             audit.get("status") != "SUCCEEDED"
             or audit.get("wiki_id") != catalog.id

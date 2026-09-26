@@ -3,6 +3,7 @@ import {
   Button,
   Codicon,
   EmptyState,
+  host,
   Input,
   Loader,
   ScrollArea,
@@ -14,9 +15,9 @@ import { useState } from 'react'
 
 import {
   applyWikiReview,
-  askWiki,
   cancelWikiBackfill,
   fetchMedia,
+  fetchStorageSettings,
   fetchWikiCatalog,
   fetchWikiDiff,
   fetchWikiHistory,
@@ -35,7 +36,6 @@ import {
   repairWikiLinks,
   resolveWikiCitation,
   rollbackWikiPage,
-  saveWikiAnswer,
   searchWiki,
   submitWikiBackfill,
   submitWikiFusionBackfill,
@@ -43,6 +43,7 @@ import {
   updateWikiSettings,
   withdrawWikiSource
 } from './api'
+import { stageWikiChatContext } from './chat-context'
 import { errorMessage, timestamp } from './format'
 import type { WikiBackfillPreview, WikiIngestion } from './types'
 import { WikiMarkdown } from './wiki-markdown'
@@ -163,7 +164,6 @@ export function WikiView({
   const queryClient = useQueryClient()
   const [pageId, setPageId] = useState<null | string>(initialPageId ?? null)
   const [query, setQuery] = useState('')
-  const [question, setQuestion] = useState('')
   const [pageType, setPageType] = useState('')
   const [tag, setTag] = useState('')
   const [sourceRevision, setSourceRevision] = useState<null | string>(null)
@@ -272,6 +272,7 @@ export function WikiView({
   })
 
   const settings = useQuery({ queryFn: fetchWikiSettings, queryKey: ['video-knowledge', 'wiki', 'settings'] })
+  const storage = useQuery({ queryFn: fetchStorageSettings, queryKey: ['video-knowledge', 'storage'] })
 
   const ingestions = useQuery({
     queryFn: () => fetchWikiIngestions(),
@@ -285,16 +286,6 @@ export function WikiView({
   })
 
   const previewAction = useMutation({ mutationFn: previewWikiBackfill, onSuccess: setPreview })
-  const askAction = useMutation({ mutationFn: askWiki })
-
-  const saveAnswerAction = useMutation({
-    mutationFn: saveWikiAnswer,
-    onSuccess: result => {
-      setPageId(result.page_id)
-      setNotice(result.unchanged ? '研究答案已在知识库中。' : '研究答案已保存到知识库。')
-      void queryClient.invalidateQueries({ queryKey: ['video-knowledge', 'wiki'] })
-    }
-  })
 
   const backfillAction = useMutation({
     mutationFn: submitWikiBackfill,
@@ -354,8 +345,6 @@ export function WikiView({
   })
 
   const actionError =
-    askAction.error ??
-    saveAnswerAction.error ??
     settingChange.error ??
     previewAction.error ??
     backfillAction.error ??
@@ -370,56 +359,17 @@ export function WikiView({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <section className="border-b border-(--ui-stroke-secondary) px-5 py-3 text-xs">
-        <div className="flex gap-2">
-          <Input
-            aria-label="向知识库提问"
-            maxLength={500}
-            onChange={event => setQuestion(event.target.value)}
-            placeholder="向知识库提问，回答会核对原视频证据…"
-            value={question}
-          />
-          <Button
-            disabled={!question.trim() || !catalog.data?.initialized || askAction.isPending}
-            onClick={() => askAction.mutate(question.trim())}
-            size="xs"
-          >
-            {askAction.isPending ? '研究中…' : '提问'}
-          </Button>
-        </div>
-        {askAction.isPending && (
-          <p className="mt-2 text-muted-foreground">正在检索知识页并核对视频证据，复杂问题可能需要几分钟。</p>
-        )}
-        {askAction.data && !askAction.isPending && (
-          <div className="mt-3 space-y-2 rounded border border-(--ui-stroke-secondary) p-3">
-            <p className="font-medium">{askAction.data.question}</p>
-            <p className="whitespace-pre-wrap">{askAction.data.answer}</p>
-            {askAction.data.insufficient_evidence && <Badge variant="outline">证据不足</Badge>}
-            {askAction.data.citations.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                {askAction.data.citations.map((citation, index) => (
-                  <Button
-                    key={`${citation.source_revision}-${index}`}
-                    onClick={() => onOpenMedia(citation.media_id, citation.start_ms)}
-                    size="xs"
-                    variant="secondary"
-                  >
-                    证据 {index + 1} · {timestamp(citation.start_ms)} · 页面修订 {citation.page_revision}
-                  </Button>
-                ))}
-              </div>
-            )}
-            {!askAction.data.insufficient_evidence && (
-              <Button
-                disabled={saveAnswerAction.isPending}
-                onClick={() => saveAnswerAction.mutate(askAction.data!.run_id)}
-                size="xs"
-                variant="secondary"
-              >
-                {saveAnswerAction.isPending ? '保存中…' : '保存到知识库'}
-              </Button>
-            )}
-          </div>
-        )}
+        <Button
+          disabled={!catalog.data?.initialized || !storage.data || ['COPYING', 'VERIFYING', 'SWITCHING', 'CLEANING'].includes(storage.data.migration.phase)}
+          onClick={() => {
+            const root = storage.data!.storage_root.replace(/[\\/]$/, '')
+            const wikiPath = `${root}${root.includes('\\') ? '\\' : '/'}wiki`
+            stageWikiChatContext(wikiPath)
+            host.newChat(undefined, { workspacePath: wikiPath })
+          }}
+          size="xs"
+        >向知识库提问</Button>
+        <span className="ml-2 text-muted-foreground">在 Hermes Chat 中提问，由 llm-wiki 判断是否更新知识库。</span>
       </section>
       <div className="flex flex-wrap items-center gap-2 border-b border-(--ui-stroke-secondary) px-5 py-2 text-xs">
         <span className="font-semibold">知识库</span>

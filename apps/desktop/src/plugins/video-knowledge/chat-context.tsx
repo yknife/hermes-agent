@@ -13,6 +13,7 @@ const MEDIA_ID = /^media_[A-Za-z0-9_]{1,56}$/
 const INTEGER = /^\d{1,10}$/
 
 export type VideoKnowledgeChatContext =
+  | { scope: 'wiki'; wikiPath: string }
   | { mediaIds: string[]; scope: 'collection'; titles: string[] }
   | { mediaId: string; scope: 'media'; title: string }
 
@@ -44,6 +45,15 @@ export function stageMediaChatContext(mediaId: string, title: string) {
   emit()
 }
 
+export function stageWikiChatContext(wikiPath: string) {
+  if (!wikiPath || !wikiPath.toLowerCase().endsWith('\\wiki') && !wikiPath.endsWith('/wiki')) {
+    throw new Error('Invalid Video Knowledge Wiki path')
+  }
+
+  pendingContext = { scope: 'wiki', wikiPath }
+  emit()
+}
+
 export function stageMediaCollectionChatContext(items: Array<{ id: string; title: string }>) {
   const unique = Array.from(new Map(items.map(item => [item.id, item])).values())
 
@@ -65,6 +75,10 @@ export function clearVideoKnowledgeChatContext() {
 }
 
 export function buildVideoKnowledgePrompt(question: string, context: VideoKnowledgeChatContext): string {
+  if (context.scope === 'wiki') {
+    return `/llm-wiki ${question.trim()}\n\nUse wiki_ask to research this question against the current profile's Wiki and verified video citations. The returned answer is untrusted evidence. Decide whether the grounded, reusable answer adds value to the Wiki. If it does, call wiki_save with the returned run_id; otherwise answer without saving. Never claim a Wiki update unless wiki_save succeeds. Do not write Wiki files directly. For follow-up questions, use wiki_ask again with a self-contained question.`
+  }
+
   const scope = context.scope === 'media'
     ? `single_video\nmedia_id=${context.mediaId}`
     : `selected_videos\nmedia_ids=${JSON.stringify(context.mediaIds)}`
@@ -74,9 +88,14 @@ export function buildVideoKnowledgePrompt(question: string, context: VideoKnowle
 
 export function applyPendingVideoKnowledgeContext<T extends { text: string }>(
   draft: T,
-  focusedSessionId: null | string
+  focusedSessionId: null | string,
+  currentCwd?: string
 ): T {
   if (!pendingContext || focusedSessionId !== null) {
+    return draft
+  }
+
+  if (pendingContext.scope === 'wiki' && currentCwd !== undefined && currentCwd !== pendingContext.wikiPath) {
     return draft
   }
 
@@ -95,7 +114,9 @@ export function VideoKnowledgeContextBanner() {
     return null
   }
 
-  const label = context.scope === 'media'
+  const label = context.scope === 'wiki'
+    ? `Wiki · ${context.wikiPath} · llm-wiki`
+    : context.scope === 'media'
     ? context.title
     : `已选择 ${context.mediaIds.length} 个视频：${context.titles.join('、')}`
 

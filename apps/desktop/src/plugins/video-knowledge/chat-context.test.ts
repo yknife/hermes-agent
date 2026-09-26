@@ -5,7 +5,8 @@ import {
   buildVideoKnowledgePrompt,
   clearVideoKnowledgeChatContext,
   stageMediaChatContext,
-  stageMediaCollectionChatContext
+  stageMediaCollectionChatContext,
+  stageWikiChatContext
 } from './chat-context'
 
 describe('Video Knowledge chat context', () => {
@@ -60,5 +61,16 @@ describe('Video Knowledge chat context', () => {
     expect(() => stageMediaCollectionChatContext([{ id: '../bad', title: 'bad' }])).toThrow(
       'Invalid Video Knowledge media selection'
     )
+  })
+
+  it('loads llm-wiki only in the fresh Wiki chat draft', () => {
+    stageWikiChatContext('D:\\vkc\\storage\\wiki')
+    expect(applyPendingVideoKnowledgeContext({ text: 'existing' }, 'current-session')).toEqual({ text: 'existing' })
+    expect(applyPendingVideoKnowledgeContext({ text: 'other' }, null, 'D:\\other')).toEqual({ text: 'other' })
+    const first = applyPendingVideoKnowledgeContext({ text: '总结这批视频' }, null, 'D:\\vkc\\storage\\wiki')
+    expect(first.text).toMatch(/^\/llm-wiki 总结这批视频/)
+    expect(first.text).toContain('wiki_ask')
+    expect(first.text).toContain('wiki_save')
+    expect(applyPendingVideoKnowledgeContext({ text: 'follow-up' }, null)).toEqual({ text: 'follow-up' })
   })
 })

@@ -1,10 +1,14 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
+from hermes_state import SessionDB
 from plugins import video_knowledge
 from plugins.video_knowledge import tools as tool_module
+from plugins.video_knowledge import wiki_chat_tools
 from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     Base,
     KnowledgeDocument,
@@ -360,11 +364,16 @@ def test_plugin_registers_only_bounded_read_only_tool_schemas(
         "cancel_collection",
         "retry_collection",
     }
-    assert {item["name"] for item in registrations} == read_only_names | messaging_names
+    wiki_names = {"wiki_ask", "wiki_save"}
+    assert {item["name"] for item in registrations} == (
+        read_only_names | messaging_names | wiki_names
+    )
     assert all(item["is_async"] is True for item in registrations)
     read_only = [item for item in registrations if item["name"] in read_only_names]
+    wiki = [item for item in registrations if item["name"] in wiki_names]
     messaging = [item for item in registrations if item["name"] in messaging_names]
     assert all(item["toolset"] == "video_knowledge" for item in read_only)
+    assert all(item["toolset"] == "video_knowledge" for item in wiki)
     assert all(item["toolset"] == "video_knowledge_messaging" for item in messaging)
     assert all(item.get("check_fn") is None for item in registrations)
     schemas = json.dumps([item["schema"] for item in read_only]).casefold()
@@ -387,3 +396,84 @@ def test_full_knowledge_documents_are_bounded_for_chat_context() -> None:
     assert truncated is True
     assert len(content) == 1
     assert len(json.dumps(content, ensure_ascii=False)) < 12_100
+
+
+def test_wiki_chat_tools_require_the_profiles_wiki_workspace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    wiki = tmp_path / "storage" / "wiki"
+    wiki.mkdir(parents=True)
+    monkeypatch.setattr(wiki_chat_tools, "get_hermes_home", lambda: tmp_path)
+    state = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        state.create_session("wiki-chat", source="desktop", cwd=str(wiki))
+        state.create_session("other-chat", source="desktop", cwd=str(tmp_path))
+    finally:
+        state.close()
+    assert wiki_chat_tools._wiki_chat_session("wiki-chat", wiki)
+    assert not wiki_chat_tools._wiki_chat_session("other-chat", wiki)
+    assert not wiki_chat_tools._wiki_chat_session("missing", wiki)
+
+
+@pytest.mark.asyncio
+async def test_wiki_chat_query_failure_explains_reason_without_retry(
+    monkeypatch,
+) -> None:
+    error = wiki_chat_tools.WikiQueryIncompleteError(
+        "wq_" + "a" * 32, budget_exhausted=True
+    )
+    database = SimpleNamespace(dispose=AsyncMock())
+    service = SimpleNamespace(
+        storage=SimpleNamespace(root=Path("wiki")), ask=AsyncMock(side_effect=error)
+    )
+    monkeypatch.setattr(
+        wiki_chat_tools, "_service", AsyncMock(return_value=(database, service))
+    )
+    monkeypatch.setattr(wiki_chat_tools, "_wiki_chat_session", lambda *_args: True)
+    result = json.loads(
+        await wiki_chat_tools._handle_ask({"question": "test"}, session_id="chat")
+    )
+    assert result["code"] == "WIKI_QUERY_BUDGET"
+    assert result["run_id"] == error.run_id
+    assert result["retryable"] is False
+    assert "Do not automatically repeat" in result["instruction"]
+    assert "budget exhausted" in result["error"]
+    service.ask.assert_awaited_once_with("test", origin_session_id="chat")
+    database.dispose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["ask", "save"])
+async def test_wiki_workspace_error_does_not_start_research_or_save(
+    tmp_path: Path, monkeypatch, operation: str
+) -> None:
+    monkeypatch.setattr(wiki_chat_tools, "get_hermes_home", lambda: tmp_path)
+    wiki = tmp_path / "storage" / "wiki"
+    state = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        state.create_session("unbound-chat", source="desktop")
+        state.create_session("wiki-chat", source="desktop", cwd=str(wiki))
+    finally:
+        state.close()
+    database = SimpleNamespace(dispose=AsyncMock())
+    service = SimpleNamespace(
+        storage=SimpleNamespace(root=wiki),
+        ask=AsyncMock(return_value={}),
+        save=AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        wiki_chat_tools, "_service", AsyncMock(return_value=(database, service))
+    )
+    handler = getattr(wiki_chat_tools, f"_handle_{operation}")
+    args = {"question": "test"} if operation == "ask" else {"run_id": "wq_" + "a" * 32}
+    result = json.loads(await handler(args, session_id="unbound-chat"))
+    assert result["code"] == "WIKI_WORKSPACE_REQUIRED"
+    assert result["retryable"] is False
+    assert "向知识库提问" in result["error"]
+    assert "Do not retry" in result["instruction"]
+    service.ask.assert_not_awaited()
+    service.save.assert_not_awaited()
+    database.dispose.assert_awaited_once()
+    allowed = json.loads(await handler(args, session_id="wiki-chat"))
+    assert allowed["success"] is True
+    getattr(service, operation).assert_awaited_once()

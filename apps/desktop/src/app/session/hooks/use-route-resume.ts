@@ -1,7 +1,7 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
-import { type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
+import { $freshDraftReady, type SessionResumeRequest, setResumeExhaustedSessionId } from '@/store/session'
 import { markSelectionRestore } from '@/store/session-states'
 
 interface RouteResumeOptions {
@@ -186,6 +186,10 @@ export function useRouteResume({
     if (
       isNewChatRoute(locationPathname) &&
       !creatingSessionRef.current &&
+      // An earlier effect (e.g. a plugin's newChat request) may already have
+      // prepared an explicit workspace in this commit. Render-time props still
+      // describe the old session; resetting again would discard that workspace.
+      !($freshDraftReady.get() && !activeSessionIdRef.current && !selectedStoredSessionIdRef.current) &&
       (selectedStoredSessionId || activeSessionId || !freshDraftReady) &&
       !rawHashLooksLikeSession()
     ) {

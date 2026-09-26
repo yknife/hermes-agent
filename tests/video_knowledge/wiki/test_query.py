@@ -19,13 +19,19 @@ from plugins.video_knowledge.backend.hermes_client.wiki_agent import (
     WikiAgentAdapter,
     WikiAgentError,
 )
-from plugins.video_knowledge.backend.hermes_client.wiki_query import WikiQueryAdapter
+from plugins.video_knowledge.backend.hermes_client.wiki_query import (
+    MAX_QUERY_CALLS,
+    MAX_SEARCH_CALLS,
+    WikiQueryAdapter,
+    WikiQueryIncompleteError,
+)
 from tests.video_knowledge.wiki.test_video_sources import SAMPLES, make_service, seed
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("exhaust_budget", [False, True])
 async def test_query_reads_skill_and_evidence_then_saves_only_on_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exhaust_budget: bool
 ) -> None:
     database, storage, video = await make_service(tmp_path)
     try:
@@ -68,6 +74,13 @@ async def test_query_reads_skill_and_evidence_then_saves_only_on_request(
                 assert message == "loaded llm-wiki query"
                 assert "schema" in call("wiki_query_orientation", {})
                 assert "pages" in call("wiki_search", {"query": "索引"})
+                if exhaust_budget:
+                    for _ in range(MAX_SEARCH_CALLS - 1):
+                        call("wiki_search", {"query": "索引"})
+                    assert (
+                        "Search budget exhausted"
+                        in call("wiki_search", {"query": "索引"})["error"]
+                    )
                 assert (
                     call("wiki_get_page", {"page_id": f"video_{media_id}"})["revision"]
                     == 1
@@ -81,6 +94,15 @@ async def test_query_reads_skill_and_evidence_then_saves_only_on_request(
                     },
                 )
                 assert evidence["segments"][0]["id"] == segment["id"]
+                if exhaust_budget:
+                    for _ in range(evidence["budget"]["reads_remaining"]):
+                        call("wiki_get_page", {"page_id": f"video_{media_id}"})
+                    assert (
+                        "Read budget exhausted"
+                        in call("wiki_get_page", {"page_id": f"video_{media_id}"})[
+                            "error"
+                        ]
+                    )
                 valid_ref = {
                     "page_id": f"video_{media_id}",
                     "page_revision": 1,
@@ -137,7 +159,9 @@ async def test_query_reads_skill_and_evidence_then_saves_only_on_request(
             for path in storage.root.rglob("*")
             if path.is_file()
         }
-        answer = await service.ask("视频对索引的观点是什么？")
+        answer = await service.ask(
+            "视频对索引的观点是什么？", origin_session_id="chat-one"
+        )
         assert answer["citations"][0]["page_revision"] == 1
         assert await storage.current_revision() == before
         assert before_files == {
@@ -150,18 +174,25 @@ async def test_query_reads_skill_and_evidence_then_saves_only_on_request(
                 storage.storage_root, answer["wiki_id"], answer["run_id"], "audit"
             ).read_text(encoding="utf-8")
         )
-        assert [event["tool"] for event in audit["events"]] == [
-            "skill_load",
-            "wiki_query_orientation",
-            "wiki_search",
-            "wiki_get_page",
-            "wiki_get_evidence",
-            "wiki_submit_answer",
-            "wiki_submit_answer",
-            "wiki_submit_answer",
-        ]
-        saved = await service.save(answer["run_id"])
-        repeated = await service.save(answer["run_id"])
+        if exhaust_budget:
+            assert audit["status"] == "SUCCEEDED"
+            assert audit["events"][-1] == {"tool": "wiki_submit_answer", "status": "ok"}
+        else:
+            assert [event["tool"] for event in audit["events"]] == [
+                "skill_load",
+                "wiki_query_orientation",
+                "wiki_search",
+                "wiki_get_page",
+                "wiki_get_evidence",
+                "wiki_submit_answer",
+                "wiki_submit_answer",
+                "wiki_submit_answer",
+            ]
+        assert audit["origin_session_id"] == "chat-one"
+        with pytest.raises(WikiStorageError, match="another chat session"):
+            await service.save(answer["run_id"], origin_session_id="chat-two")
+        saved = await service.save(answer["run_id"], origin_session_id="chat-one")
+        repeated = await service.save(answer["run_id"], origin_session_id="chat-one")
         assert saved["page_id"] == repeated["page_id"]
         assert repeated["unchanged"] is True
         assert await storage.current_revision() == before + 1
@@ -289,6 +320,12 @@ async def test_query_rejects_unread_evidence_and_insufficient_save(
                 )
                 call("wiki_query_orientation", {})
                 call("wiki_search", {"query": "no-match"})
+                for _ in range(MAX_QUERY_CALLS - 2):
+                    call("wiki_query_orientation", {})
+                assert (
+                    "Read budget exhausted"
+                    in call("wiki_query_orientation", {})["error"]
+                )
                 assert (
                     call(
                         "wiki_submit_answer",
@@ -311,6 +348,56 @@ async def test_query_rejects_unread_evidence_and_insufficient_save(
             await WikiQueryService(database, tmp_path / "storage").save(
                 answer["run_id"]
             )
+        assert await storage.current_revision() == 0
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exhaust_budget", [False, True])
+async def test_query_incomplete_reports_safe_reason_and_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exhaust_budget: bool
+) -> None:
+    database, storage, _video = await make_service(tmp_path)
+    try:
+        monkeypatch.setattr(
+            WikiAgentAdapter, "_load_skill", lambda *_a, **_kw: ("skill", SKILL_SHA256)
+        )
+
+        class IncompleteAgent:
+            session_estimated_cost_usd = 0.0
+
+            def __init__(self, **kwargs):
+                self.run_id = kwargs["session_id"]
+
+            def run_conversation(self, *_args, **_kwargs):
+                from tools.registry import registry
+
+                if exhaust_budget:
+                    for _ in range(MAX_QUERY_CALLS + 1):
+                        registry.get_entry("wiki_query_orientation").handler(
+                            {}, session_id=self.run_id
+                        )
+                return {"api_calls": 1}
+
+        monkeypatch.setattr("run_agent.AIAgent", IncompleteAgent)
+        with pytest.raises(WikiQueryIncompleteError) as caught:
+            await WikiQueryAdapter(storage, model="fixture-model").run("测试问题")
+        error = caught.value
+        assert error.code == (
+            "WIKI_QUERY_BUDGET" if exhaust_budget else "WIKI_QUERY_INCOMPLETE"
+        )
+        catalog = await storage._catalog()
+        audit = json.loads(
+            query_run_path(
+                storage.storage_root, catalog.id, error.run_id, "audit"
+            ).read_text(encoding="utf-8")
+        )
+        assert audit["error_code"] == error.code
+        assert audit["error_message"] == str(error)
+        assert not query_run_path(
+            storage.storage_root, catalog.id, error.run_id, "answer"
+        ).exists()
         assert await storage.current_revision() == 0
     finally:
         await database.dispose()

@@ -25,6 +25,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $freshDraftReady,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
@@ -39,6 +40,7 @@ import {
   setCurrentModel,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setFreshDraftReady,
   setMessages,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
@@ -52,6 +54,7 @@ import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-re
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
+import { useRouteResume } from './use-route-resume'
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -116,17 +119,23 @@ function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
 function Harness({
   navigate = vi.fn(),
   onReady,
-  requestGateway
+  requestGateway,
+  requestedWorkspace
 }: {
   navigate?: ReturnType<typeof vi.fn>
   onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestedWorkspace?: string
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+  const freshDraftReady = useStore($freshDraftReady)
+  const activeSessionIdRef = useRef<string | null>(null)
+  const selectedStoredSessionIdRef = useRef<string | null>(null)
+  const appliedWorkspaceRef = useRef<string | undefined>(undefined)
 
   const actions = useSessionActions({
     activeSessionId: null,
-    activeSessionIdRef: ref<string | null>(null),
+    activeSessionIdRef,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -137,10 +146,39 @@ function Harness({
     resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
-    selectedStoredSessionIdRef: ref<string | null>(null),
+    selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: ref(new Map<string, ClientSessionState>()),
     syncSessionStateToView: vi.fn(),
     updateSessionState: () => ({}) as ClientSessionState
+  })
+
+  const { startFreshSessionDraft } = actions
+  // Match ContribWiring: plugin request effect runs before route reconciliation.
+  // eslint-disable-next-line no-restricted-syntax -- one-shot request latch, not a reactive-value mirror
+  useEffect(() => {
+    if (requestedWorkspace && appliedWorkspaceRef.current !== requestedWorkspace) {
+      appliedWorkspaceRef.current = requestedWorkspace
+      startFreshSessionDraft({ workspaceTarget: requestedWorkspace })
+    }
+  }, [requestedWorkspace, startFreshSessionDraft])
+
+  useRouteResume({
+    activeSessionId: null,
+    activeSessionIdRef,
+    creatingSessionRef: ref(false),
+    currentView: requestedWorkspace ? 'chat' : 'extension',
+    freshDraftReady,
+    gatewayState: 'open',
+    locationPathname: '/',
+    resumeSession: async () => undefined,
+    resumeFailedSessionId: null,
+    resumeExhaustedSessionId: null,
+    sessionResumeRequest: null,
+    routedSessionId: null,
+    runtimeIdByStoredSessionIdRef: ref(new Map()),
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef,
+    startFreshSessionDraft: actions.startFreshSessionDraft
   })
 
   useEffect(() => {
@@ -432,6 +470,22 @@ async function createWith(
 
 describe('startFreshSessionDraft', () => {
   afterEach(() => cleanup())
+
+  it('keeps the Wiki workspace when a plugin request and route change share a render', async () => {
+    setFreshDraftReady(false)
+    setNewChatWorkspaceTarget(undefined)
+    const wiki = 'D:\\vkc\\storage\\wiki'
+    const requestGateway = vi.fn(async () => ({ session_id: 'wiki-runtime', info: {} }) as never)
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={value => (handle = value)} requestedWorkspace={wiki} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+    expect($newChatWorkspaceTarget.get()).toBe(wiki)
+    expect($currentCwd.get()).toBe(wiki)
+    await act(async () => {
+      await handle!.createBackendSessionForSend()
+    })
+    expect(requestGateway).toHaveBeenCalledWith('session.create', expect.objectContaining({ cwd: wiki, source: 'desktop' }))
+  })
 
   it('can reset machine-bound session state without closing the current overlay route', async () => {
     const navigate = vi.fn()

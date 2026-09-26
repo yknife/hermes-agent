@@ -649,11 +649,10 @@ export const host = {
     return close
   },
 
-  /** Start a fresh chat draft, optionally pointed at another profile (its
-   *  backend spins up in the background — same door the sidebar's per-profile
-   *  "+" uses). */
-  newChat: (profile?: null | string): void => {
-    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+  /** Start a fresh chat draft, optionally pointed at another profile and
+   *  bound to an explicit workspace directory. */
+  newChat: (profile?: null | string, options?: { workspacePath?: string }): void => {
+    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get(), options?.workspacePath)
     window.location.hash = '#/'
   },
 

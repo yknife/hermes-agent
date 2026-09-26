@@ -1,5 +1,5 @@
 name: video_knowledge
-version: 0.21.3
+version: 0.22.0
 description: "Profile-scoped knowledge tools and opt-in trusted messaging collection."
 author: Video Knowledge Collector
 kind: backend
@@ -9,6 +9,8 @@ provides_tools:
   - get_segments
   - search_knowledge
   - get_knowledge_documents
+  - wiki_ask
+  - wiki_save
   - collect_video
   - get_collection_status
   - cancel_collection

@@ -61,7 +61,9 @@ const plugin: HermesPlugin = {
         id: 'chat-context-middleware',
         area: COMPOSER_AREAS.middleware,
         data: {
-          handler: draft => applyPendingVideoKnowledgeContext(draft, host.state.focusedSessionId.get())
+          handler: draft => applyPendingVideoKnowledgeContext(
+            draft, host.state.focusedSessionId.get(), host.state.cwd.get()
+          )
         } satisfies ComposerMiddleware
       },
       {

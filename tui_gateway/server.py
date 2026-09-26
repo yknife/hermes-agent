@@ -6833,6 +6833,15 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _session_toolsets(sid: str, platform: str | None, workspace_cwd: str | None = None):
+    session = _sessions.get(sid)
+    cwd = workspace_cwd or (session.get("cwd") if session else None)
+    source = platform or (session.get("source") if session else None)
+    if source == "desktop" and cwd and (Path(cwd) / "_meta" / "wiki.json").is_file():
+        return ["video_knowledge"]
+    return _load_enabled_toolsets(_resolve_agent_platform(platform))
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -6843,6 +6852,7 @@ def _make_agent(
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
     platform_override: str | None = None,
+    workspace_cwd: str | None = None,
 ):
     # AC-4 test seam: dead unless explicitly armed by the isolated certify
     # harness. Both inline and compute-host paths construct through _make_agent,
@@ -6998,7 +7008,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
-        enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
+        enabled_toolsets=_session_toolsets(sid, platform_override, workspace_cwd),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.

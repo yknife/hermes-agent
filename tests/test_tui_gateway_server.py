@@ -19,6 +19,19 @@ from tui_gateway import server
 from tui_gateway.transport import bind_transport, reset_transport
 
 
+def test_desktop_wiki_session_only_receives_controlled_video_knowledge_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wiki = tmp_path / "wiki"
+    (wiki / "_meta").mkdir(parents=True)
+    (wiki / "_meta" / "wiki.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setitem(server._sessions, "wiki-test", {"source": "desktop", "cwd": str(wiki)})
+    assert server._session_toolsets("wiki-test", "desktop") == ["video_knowledge"]
+    assert server._session_toolsets("missing", "desktop", str(wiki)) == ["video_knowledge"]
+    monkeypatch.setitem(server._sessions, "wiki-test", {"source": "desktop", "cwd": str(tmp_path)})
+    assert server._session_toolsets("wiki-test", "desktop") != ["video_knowledge"]
+
+
 def _dispatch_sync(req: dict, transport=None) -> dict | None:
     """Run one RPC to completion synchronously, regardless of pool routing.
 
