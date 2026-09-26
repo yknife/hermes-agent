@@ -369,8 +369,37 @@ async def test_renderer_ignores_persisted_dangling_digest(tmp_path):
             part.content
             for part in render_notification(await dispatcher._load_view(item_id))
         )
-        assert "完整句子。…" in rendered
+        assert "完整句子。" * 250 in rendered
+        assert "…" not in rendered
         assert "【知识点概览】" not in rendered
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("repeat", [250, 2500])
+async def test_renderer_preserves_entire_summary_without_digest(tmp_path, repeat):
+    database = await _database(tmp_path)
+    try:
+        item_id = await _seed(database)
+        summary = "开头内容。" + "中段内容。" * repeat + "结尾建议必须保留。"
+        async with database.session() as session, session.begin():
+            document = await session.get(KnowledgeDocument, "knowledge-summary")
+            document.content_json = json.dumps(
+                {"summary": summary, "notification_summary": None},
+                ensure_ascii=False,
+            )
+        dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
+        parts = render_notification(await dispatcher._load_view(item_id))
+        bodies = [part.content.rsplit("\n\n通知 ", 1)[0] for part in parts]
+        # Ignore packing whitespace but verify every character, including the end.
+        assert summary in "".join("".join(bodies).split())
+        assert len(parts) == (1 if repeat == 250 else 3)
+        for index, part in enumerate(parts, 1):
+            assert len(bodies[index - 1]) <= 6000
+            assert part.number == index
+            assert part.total == len(parts)
+            assert part.idempotency_key.endswith(f":part:{index}")
     finally:
         await database.dispose()
 

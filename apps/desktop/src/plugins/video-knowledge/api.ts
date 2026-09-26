@@ -197,7 +197,7 @@ export const fetchWikiSource = (mediaId: string, revision: string) =>
   call<WikiSourceSnapshot>(`/wiki/sources/${encodeURIComponent(mediaId)}/${encodeURIComponent(revision)}`)
 export const fetchWikiSettings = () => call<WikiSettings>('/wiki/settings')
 export const askWiki = (question: string) =>
-  call<WikiAnswer>('/wiki/query', { method: 'POST', body: { question }, timeoutMs: 180_000 })
+  call<WikiAnswer>('/wiki/query', { method: 'POST', body: { question }, timeoutMs: 600_000 })
 export const saveWikiAnswer = (runId: string) =>
   call<WikiSavedAnswer>(`/wiki/query/${encodeURIComponent(runId)}/save`, { method: 'POST', timeoutMs: 30_000 })
 export const lintWikiStructure = () => call<WikiStructureLint>('/wiki/lint/structure')

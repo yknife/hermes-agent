@@ -22,7 +22,6 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.notification_digest import (
-    readable_excerpt,
     valid_notification_digest,
 )
 from plugins.video_knowledge.backend.app.services.outbox_service import (
@@ -35,7 +34,6 @@ logger = logging.getLogger(__name__)
 _SAFE_CODE = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
 _TEXT_LIMIT = 6000
 _TITLE_LIMIT = 180
-_SUMMARY_LIMIT = 900
 _MAX_DEGRADED_RANGES = 12
 
 
@@ -93,7 +91,7 @@ def _safe_code(value: str | None, default: str = "UNKNOWN_ERROR") -> str:
     return normalized if _SAFE_CODE.fullmatch(normalized) else default
 
 
-def _text(value: object, limit: int) -> str:
+def _text(value: object, limit: int | None = None) -> str:
     """Flatten and escape untrusted media/model text for Feishu markdown."""
     flattened = " ".join(str(value or "").split())[:limit]
     for marker in ("\\", "`", "*", "_", "~", "[", "]", "<", ">", "#"):
@@ -233,11 +231,9 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
                 f"**作者：** {_text(media.author, 100)}",
                 f"**时长：** {_duration(media.duration_seconds)}",
                 "**结论：**",
-                _text(
-                    digest
-                    or readable_excerpt(summary.get("summary"), limit=_SUMMARY_LIMIT),
-                    _SUMMARY_LIMIT,
-                ),
+                # A digest is optional. Preserve the complete fallback; packing
+                # below handles message limits without discarding the ending.
+                _text(digest or summary.get("summary")),
             ])
         ]
         ranges = summary.get("degraded_ranges")

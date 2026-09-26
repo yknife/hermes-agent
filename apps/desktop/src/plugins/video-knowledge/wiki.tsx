@@ -386,6 +386,9 @@ export function WikiView({
             {askAction.isPending ? '研究中…' : '提问'}
           </Button>
         </div>
+        {askAction.isPending && (
+          <p className="mt-2 text-muted-foreground">正在检索知识页并核对视频证据，复杂问题可能需要几分钟。</p>
+        )}
         {askAction.data && !askAction.isPending && (
           <div className="mt-3 space-y-2 rounded border border-(--ui-stroke-secondary) p-3">
             <p className="font-medium">{askAction.data.question}</p>

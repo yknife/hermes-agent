@@ -68,7 +68,7 @@ describe('video knowledge plugin API', () => {
     expect(rest).toHaveBeenCalledWith('/wiki/query', {
       body: { question: 'A 和 B 的观点？' },
       method: 'POST',
-      timeoutMs: 180_000
+      timeoutMs: 600_000
     })
     expect(rest).toHaveBeenCalledTimes(1)
 
