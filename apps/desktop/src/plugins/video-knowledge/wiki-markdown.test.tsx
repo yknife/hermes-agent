@@ -35,6 +35,48 @@ const page: WikiPage = {
 }
 
 describe('WikiMarkdown', () => {
+  it('displays saved query punctuation without exposing Markdown escape characters', () => {
+    const queryPage = {
+      ...page,
+      body: String.raw`\- AI 仍需要人的判断。Netty \(Java\)、C\+\+、版本 1\.0，路径 D:\\vkc\\storage\\wiki。`
+    }
+
+    const { container } = render(
+      <WikiMarkdown onCitation={() => undefined} onPage={() => undefined} page={queryPage} />
+    )
+
+    expect(container.textContent).toBe('- AI 仍需要人的判断。Netty (Java)、C++、版本 1.0，路径 D:\\vkc\\storage\\wiki。')
+  })
+
+  it('keeps decoded query markup inert even when it names a known page', () => {
+    const queryPage = {
+      ...page,
+      body: String.raw`\# 标题
+\*\*保留星号\*\* \[目录\]\(\.\./sessions/live\.md\)
+\!\[图片\]\(https://example\.com/image\)
+\<script\>alert\(1\)\</script\>`
+    }
+
+    const { container } = render(
+      <WikiMarkdown onCitation={() => undefined} onPage={() => undefined} page={queryPage} />
+    )
+
+    expect(container.textContent).toContain('**保留星号** [目录](../sessions/live.md)')
+    expect(container.textContent).toContain('<script>alert(1)</script>')
+    expect(container.querySelector('button, a, img, script, strong')).toBeNull()
+  })
+
+  it('preserves backslashes before non-punctuation and inside fenced code', () => {
+    const queryPage = { ...page, body: String.raw`D:\vkc\storage\wiki` + '\n```text\n' + String.raw`\- literal \\path` + '\n```' }
+
+    const { container } = render(
+      <WikiMarkdown onCitation={() => undefined} onPage={() => undefined} page={queryPage} />
+    )
+
+    expect(container.querySelector('p')?.textContent).toBe(String.raw`D:\vkc\storage\wiki`)
+    expect(container.querySelector('pre')?.textContent).toBe(String.raw`\- literal \\path`)
+  })
+
   it('renders knowledge labels as bold text alongside verified citations', () => {
     const knowledgePage = {
       ...page,

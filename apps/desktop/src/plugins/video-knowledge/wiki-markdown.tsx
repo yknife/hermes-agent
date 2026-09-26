@@ -11,8 +11,9 @@ function displayText(value: string): string {
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
-    .replace(/\\\[/g, '[')
-    .replace(/\\\]/g, ']')
+    // Decode Markdown punctuation escapes only after recognizing markup, so
+    // saved model text cannot turn into active links or formatting.
+    .replace(/\\([\u0021-\u002f\u003a-\u0040\u005b-\u0060\u007b-\u007e])/g, '$1')
 }
 
 function formattedText(value: string, keyPrefix: string): ReactNode[] {
