@@ -92,8 +92,6 @@ function AsrSettingsForm({ initial, wikiSettings }: { initial: AsrStatus; wikiSe
           <p className="mt-1 text-xs text-muted-foreground">管理知识库、媒体资产存储目录、运行环境和 faster-whisper 默认配置。</p>
         </header>
 
-        <WikiSettingsSection {...wikiSettings} />
-
         <StorageSettingsSection />
 
         <CookieSettingsSection />
@@ -155,6 +153,8 @@ function AsrSettingsForm({ initial, wikiSettings }: { initial: AsrStatus; wikiSe
           </div>
           {download.error && <div className="mt-4 rounded border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">{errorMessage(download.error, '模型下载失败')}</div>}
         </section>
+
+        <WikiSettingsSection {...wikiSettings} />
       </div>
     </div>
   )
