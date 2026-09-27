@@ -21,6 +21,7 @@ import type {
   AsrSettingsUpdate, AsrStatus, CookiePlatform, CookieSettings, MessagingQuotaSettings,
   StorageMigrationPhase, StorageSettings
 } from './types'
+import { type WikiSettingsProps, WikiSettingsSection } from './wiki-settings'
 
 const STATUS_KEY = ['video-knowledge', 'system', 'asr'] as const
 const RUNTIME_KEY = ['video-knowledge', 'system', 'runtime'] as const
@@ -29,7 +30,7 @@ const COOKIE_KEY = ['video-knowledge', 'system', 'cookies'] as const
 const MESSAGING_QUOTA_KEY = ['video-knowledge', 'system', 'messaging-quotas'] as const
 const ACTIVE_MIGRATION_PHASES = new Set<StorageMigrationPhase>(['COPYING', 'VERIFYING', 'SWITCHING', 'CLEANING'])
 
-export function SystemSettingsView() {
+export function SystemSettingsView({ wikiSettings }: { wikiSettings: WikiSettingsProps }) {
   const status = useQuery({
     queryFn: fetchAsrStatus,
     queryKey: STATUS_KEY,
@@ -43,10 +44,10 @@ export function SystemSettingsView() {
     return <div className="m-5 rounded border border-destructive/40 bg-destructive/10 p-4 text-xs text-destructive">{errorMessage(status.error, 'ASR 状态检测失败')}</div>
   }
 
-  return <AsrSettingsForm initial={status.data!} />
+  return <AsrSettingsForm initial={status.data!} wikiSettings={wikiSettings} />
 }
 
-function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
+function AsrSettingsForm({ initial, wikiSettings }: { initial: AsrStatus; wikiSettings: WikiSettingsProps }) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<AsrSettingsUpdate>(() => toForm(initial))
   const [saved, setSaved] = useState(false)
@@ -88,8 +89,10 @@ function AsrSettingsForm({ initial }: { initial: AsrStatus }) {
         <header>
           <div className="text-[0.6875rem] font-semibold uppercase tracking-wider text-primary">Video Knowledge</div>
           <h2 className="mt-1 text-lg font-semibold">系统设置</h2>
-          <p className="mt-1 text-xs text-muted-foreground">管理媒体资产存储目录、运行环境和 faster-whisper 默认配置。</p>
+          <p className="mt-1 text-xs text-muted-foreground">管理知识库、媒体资产存储目录、运行环境和 faster-whisper 默认配置。</p>
         </header>
+
+        <WikiSettingsSection {...wikiSettings} />
 
         <StorageSettingsSection />
 

@@ -7,6 +7,7 @@ import { SystemSettingsView } from './asr-settings'
 import { useVideoKnowledgeI18n } from './i18n'
 import { JobsView } from './jobs'
 import { LibraryView } from './library'
+import type { WikiSemanticLint } from './types'
 import { WikiView } from './wiki'
 
 type View = 'add' | 'asr' | 'jobs' | 'library' | 'wiki'
@@ -26,6 +27,7 @@ export function VideoKnowledgePage() {
   )
 
   const [openedWikiId, setOpenedWikiId] = useState<null | string>(routedWikiId)
+  const [semanticReport, setSemanticReport] = useState<WikiSemanticLint | null>(null)
 
   const health = useQuery({
     queryFn: fetchHealth,
@@ -103,10 +105,18 @@ export function VideoKnowledgePage() {
             setOpenedSeekMs(startMs)
             setView('library')
           }}
+          semanticReport={semanticReport}
         />
       )}
       {view === 'jobs' && <JobsView initialJobId={createdJobId} />}
-      {view === 'asr' && <SystemSettingsView />}
+      {view === 'asr' && <SystemSettingsView wikiSettings={{
+        onOpenWiki: pageId => {
+          setOpenedWikiId(pageId)
+          setView('wiki')
+        },
+        onSemanticReport: setSemanticReport,
+        semanticReport
+      }} />}
     </div>
   )
 }
