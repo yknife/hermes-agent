@@ -114,6 +114,7 @@ export function VideoKnowledgePage() {
           setOpenedWikiId(pageId)
           setView('wiki')
         },
+        onOpenJobs: () => setView('jobs'),
         onSemanticReport: setSemanticReport,
         semanticReport
       }} />}

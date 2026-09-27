@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { useState } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from './api'
 import type { WikiPage, WikiSemanticLint } from './types'
@@ -25,6 +25,57 @@ function Harness() {
 }
 
 describe('Wiki settings maintenance', () => {
+  afterEach(() => { cleanup(); vi.resetAllMocks() })
+
+  function renderSettings() {
+    vi.mocked(api.fetchWikiSettings).mockResolvedValue({ auto_ingest: true, queued_policy: 'continue' })
+    vi.mocked(api.fetchWikiCatalog).mockResolvedValue({ initialized: true, items: [page], tags: [], types: ['topic'] })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>)
+
+    return client
+  }
+
+  it('isolates results and errors, retains the previous successful report on retry, and collapses independently', async () => {
+    vi.mocked(api.lintWikiStructure).mockResolvedValueOnce({ wiki_revision: 12, issues: [] }).mockRejectedValueOnce(new Error('structure failed'))
+    vi.mocked(api.rebuildWikiSearch).mockResolvedValue({ count: 8, initialized: true, revision: 12 })
+    const client = renderSettings()
+    await screen.findByRole('button', { name: '关闭自动入库' })
+    fireEvent.click(screen.getByRole('button', { name: '结构巡检' }))
+    await screen.findByText('未发现结构问题。')
+    fireEvent.click(screen.getByRole('button', { name: '重建搜索索引' }))
+    await screen.findByText('搜索索引已重建：8 个页面。')
+    fireEvent.click(screen.getByRole('button', { name: '结构巡检' }))
+    const structural = within(screen.getByRole('region', { name: '结构巡检' }))
+    expect((await structural.findByRole('alert')).textContent).toContain('structure failed')
+    expect(structural.getByText('未发现结构问题。')).toBeTruthy()
+    const search = within(screen.getByRole('region', { name: '重建搜索索引' }))
+    expect(search.queryByRole('alert')).toBeNull()
+    expect(search.getByText('搜索索引已重建：8 个页面。')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '收起结构巡检结果' }))
+    expect(screen.getByRole('button', { name: '展开结构巡检结果' }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: '收起重建搜索索引结果' }).getAttribute('aria-expanded')).toBe('true')
+    client.clear()
+  })
+
+  it('requires explicit confirmation before recompiling and keeps its result inside the schema card', async () => {
+    vi.mocked(api.previewWikiSchema).mockResolvedValue({ schema_sha256: 'hash', schema_version: 2, count: 1, affected_page_ids: ['topic_a'], outdated_page_ids: ['topic_a'] })
+    vi.mocked(api.recompileWikiFusion).mockResolvedValue({ job_ids: ['job-1'] })
+    const client = renderSettings()
+    await screen.findByRole('button', { name: '关闭自动入库' })
+    fireEvent.click(screen.getByRole('button', { name: '规范影响预览' }))
+    fireEvent.click(await screen.findByRole('button', { name: '按当前规范重新融合' }))
+    expect(api.recompileWikiFusion).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(api.recompileWikiFusion).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '按当前规范重新融合' }))
+    fireEvent.click(screen.getByRole('button', { name: '确认重新融合' }))
+    const schema = within(screen.getByRole('region', { name: '规范影响预览' }))
+    await schema.findByText('已提交或保留 1 个规范重编译任务。')
+    expect(api.recompileWikiFusion).toHaveBeenCalledTimes(1)
+    client.clear()
+  })
+
   it('keeps semantic review available after navigating from settings into a clean Wiki view', async () => {
     vi.mocked(api.fetchWikiSettings).mockResolvedValue({ auto_ingest: true, queued_policy: 'continue' })
     vi.mocked(api.fetchWikiCatalog).mockResolvedValue({ initialized: true, items: [page], tags: [], types: ['topic'] })
