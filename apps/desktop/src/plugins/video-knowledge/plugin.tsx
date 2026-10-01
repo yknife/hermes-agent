@@ -31,7 +31,20 @@ const plugin: HermesPlugin = {
     // The health call is also the lifecycle handshake: Hermes initializes the
     // profile-scoped database and supervised worker as soon as this bundled
     // plugin loads, before the user opens the page.
-    const ensureRuntime = () => ctx.rest('/system/health').catch(() => undefined)
+    // First access may copy and migrate the profile database before the worker
+    // starts. Keep heartbeats from piling up behind that same startup lock.
+    let healthRequest: Promise<unknown> | null = null
+
+    const ensureRuntime = () => {
+      if (healthRequest) {return healthRequest}
+
+      healthRequest = ctx.rest('/system/health', { timeoutMs: 120_000 })
+        .catch(() => undefined)
+        .finally(() => { healthRequest = null })
+
+      return healthRequest
+    }
+
     void ensureRuntime()
     const runtimeHeartbeat = window.setInterval(ensureRuntime, 30_000)
     ctx.onDispose(() => window.clearInterval(runtimeHeartbeat))

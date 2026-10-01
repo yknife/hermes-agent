@@ -8,6 +8,7 @@ import {
   bindApi,
   deleteMedia,
   fetchCookieSettings,
+  fetchHealth,
   fetchRuntimeStatus,
   fetchStorageSettings,
   ingest,
@@ -34,6 +35,13 @@ afterEach(() => {
 })
 
 describe('video knowledge plugin API', () => {
+  it('allows the health request to wait for first-run database migration', async () => {
+    const rest = vi.fn().mockResolvedValue({ status: 'ok' })
+    dispose.push(bindApi(rest))
+    await fetchHealth()
+    expect(rest).toHaveBeenCalledWith('/system/health', { timeoutMs: 120_000 })
+  })
+
   it('keeps Wiki lint read-only and requires an explicit source withdrawal', async () => {
     const rest = vi.fn().mockResolvedValue({})
 

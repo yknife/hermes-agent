@@ -4838,7 +4838,9 @@ function fetchJson(url, token, options: any = {}) {
 
     req.on('error', reject)
     req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
+      // Node's socket timeout also fires after connection while waiting for
+      // response headers. Include only pathname, never query or credentials.
+      req.destroy(new Error(`Hermes backend did not respond to ${options.method || 'GET'} ${parsed.pathname} within ${timeoutMs}ms`))
     })
 
     if (body) {

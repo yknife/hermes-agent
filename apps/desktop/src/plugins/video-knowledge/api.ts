@@ -92,7 +92,7 @@ function call<T>(path: string, options?: PluginRestOptions): Promise<T> {
   return rest<T>(path, options)
 }
 
-export const fetchHealth = () => call<Health>('/system/health')
+export const fetchHealth = () => call<Health>('/system/health', { timeoutMs: 120_000 })
 export const fetchRuntimeStatus = () => call<RuntimeStatus>('/system/runtime')
 export const fetchStorageSettings = () => call<StorageSettings>('/system/storage')
 export const fetchCookieSettings = () => call<CookieSettings>('/system/cookies')
