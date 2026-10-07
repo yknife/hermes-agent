@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from plugins.video_knowledge.backend.media_adapters.errors import (
     AuthenticationRequiredError,
+    MediaToolError,
     MediaUnavailableError,
     RateLimitedError,
 )
@@ -165,10 +166,30 @@ async def test_probe_uses_argument_list_and_maps_metadata() -> None:
     )
     assert result.external_id == "abc"
     assert "--dump-single-json" in runner.args
+    assert (Path(runner.args[runner.args.index("--plugin-dirs") + 1]) / "vkc").is_dir()
     assert runner.args[-1] == "https://example.test/v/abc"
     assert result.subtitles[0].language == "zh-CN"
     assert result.subtitles[0].automatic is False
     assert YtDlpAdapter.select_subtitle(result, ["zh", "en"]) == result.subtitles[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stderr,error,expected",
+    [
+        ("only available for registered users", AuthenticationRequiredError, "Cookies"),
+        ("Unable to extract initial state", MediaToolError, "页面数据"),
+    ],
+)
+async def test_bilibili_fallback_errors_have_safe_actionable_messages(
+    stderr, error, expected
+):
+    runner = FakeRunner((1, "", stderr + " https://example.test/?token=secret"))
+    with pytest.raises(error, match=expected) as caught:
+        await YtDlpAdapter(runner=runner).probe(
+            "https://www.bilibili.com/video/BV1UbpP6EELq"
+        )
+    assert "secret" not in str(caught.value)
 
 
 @pytest.mark.asyncio

@@ -264,6 +264,7 @@ def _raise_for_failure(stderr: str) -> None:
             "sign in",
             "login required",
             "authentication required",
+            "only available for registered users",
             "private video",
             "members-only",
             "cookies are no longer valid",
@@ -287,6 +288,10 @@ def _raise_for_failure(stderr: str) -> None:
         raise RateLimitedError("平台拒绝或限制了当前请求，请稍后重试或配置 Cookies")
     if "timed out" in value or "timeout" in value:
         raise NetworkTimeoutError("连接视频平台超时")
+    if "unable to extract initial state" in value:
+        raise MediaToolError(
+            "视频平台未返回可解析的页面数据，请检查 Cookies 或稍后重试"
+        )
     raise MediaToolError("媒体工具执行失败")
 
 
@@ -296,6 +301,10 @@ class YtDlpAdapter:
     ) -> None:
         self.runner = runner or AsyncCommandRunner()
         self.command = list(command or (sys.executable, "-m", "yt_dlp"))
+        self.command.extend((
+            "--plugin-dirs",
+            str(Path(__file__).parent / "ytdlp_plugins"),
+        ))
 
     @staticmethod
     def _auth_args(cookies_file: Path | None, proxy: str | None) -> list[str]:
