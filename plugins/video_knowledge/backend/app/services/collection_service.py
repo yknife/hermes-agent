@@ -195,16 +195,10 @@ class CollectionService:
                     )
                 await self._enforce_storage_capacity(session)
                 await self._enforce_quotas(session, origin)
-                # Each live request owns its recording chain, independent of
-                # desktop monitors and earlier broadcasts at the same room URL.
-                source = (
-                    None
-                    if is_live
-                    else await session.scalar(
-                        select(Source).where(
-                            Source.type == "VIDEO",
-                            Source.canonical_url == canonical,
-                        )
+                source = await session.scalar(
+                    select(Source).where(
+                        Source.type == ("LIVE" if is_live else "VIDEO"),
+                        Source.canonical_url == canonical,
                     )
                 )
                 if source is None:
@@ -220,18 +214,23 @@ class CollectionService:
                     session.add(source)
                     await session.flush()
 
-                workflow = await session.scalar(
-                    select(CollectionWorkflow)
-                    .where(
-                        CollectionWorkflow.source_id == source.id,
-                        CollectionWorkflow.status.in_([
-                            WorkflowStatus.PENDING.value,
-                            WorkflowStatus.INGESTING.value,
-                            WorkflowStatus.ANALYZING.value,
-                        ]),
+                # Share the room identity, never another request's recording chain.
+                workflow = (
+                    None
+                    if is_live
+                    else await session.scalar(
+                        select(CollectionWorkflow)
+                        .where(
+                            CollectionWorkflow.source_id == source.id,
+                            CollectionWorkflow.status.in_([
+                                WorkflowStatus.PENDING.value,
+                                WorkflowStatus.INGESTING.value,
+                                WorkflowStatus.ANALYZING.value,
+                            ]),
+                        )
+                        .order_by(CollectionWorkflow.created_at.asc())
+                        .limit(1)
                     )
-                    .order_by(CollectionWorkflow.created_at.asc())
-                    .limit(1)
                 )
                 reused = workflow is not None
                 cache_hit = False

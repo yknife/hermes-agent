@@ -63,15 +63,19 @@ class LiveRecordingPipeline:
         }.get(source.platform, source.platform)
         live_url = source.url
         if payload.get("messaging_capture"):
-            live_url = await self.messaging_url_guard.validate_input(source.url)
+            live_url = await self.messaging_url_guard.validate_input(
+                payload.get("url", source.url)
+            )
             await enforce_messaging_storage_limit(self.storage_root, payload)
-        recovery = await self.live_service.recoverable_session(source.id)
+        recovery = await self.live_service.recoverable_session(
+            source.id, job_id=job.id if payload.get("messaging_capture") else None
+        )
         temp_dir = self._session_temp_dir(recovery, job.id)
         segments = await self._load_segments(temp_dir)
 
-        if not source.enabled or await self._cancel_requested(
-            job.id, worker_id, heartbeat
-        ):
+        if (
+            not source.enabled and not payload.get("messaging_capture")
+        ) or await self._cancel_requested(job.id, worker_id, heartbeat):
             if recovery is not None:
                 await self.live_service.finish_session(
                     recovery.id,
@@ -105,10 +109,11 @@ class LiveRecordingPipeline:
             part = int(payload.get("recording_part", 1))
             status = replace(
                 status,
-                session_key=f"{status.session_key}:part{part}",
+                session_key=f"{status.session_key}:capture:{job.id}:part{part}",
                 title=f"{status.title or platform_label + '直播'} · 第{part}段",
             )
-        await self.live_service.mark_checked(source.id, poll_interval)
+        if not payload.get("messaging_capture"):
+            await self.live_service.mark_checked(source.id, poll_interval)
 
         if not status.is_live:
             if recovery is not None and segments:

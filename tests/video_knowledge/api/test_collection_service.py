@@ -114,6 +114,51 @@ async def test_bilibili_short_link_is_classified_after_redirect(
 
 
 @pytest.mark.asyncio
+async def test_live_requests_reuse_source_but_keep_independent_workflows(tmp_path):
+    database, service = await _service(
+        tmp_path / "app.db", messaging_max_active_per_user=5
+    )
+    url = "https://live.bilibili.com/544843"
+    try:
+        async with database.session() as session, session.begin():
+            session.add(
+                Source(
+                    id="desktop-live",
+                    type="LIVE",
+                    platform="bilibili",
+                    url=url,
+                    canonical_url=url,
+                    enabled=False,
+                    config_json='{"poll_interval_seconds":120}',
+                )
+            )
+        first = await service.collect(url, _origin())
+        second = await service.collect(url, _origin(message="second"))
+        replay = await service.collect(url, _origin())
+        assert first["job_id"] == replay["job_id"]
+        assert first["workflow_id"] != second["workflow_id"]
+        assert first["job_id"] != second["job_id"]
+        assert not first["reused"] and not second["reused"]
+        await service.cancel(first["workflow_id"], _origin())
+        async with database.session() as session:
+            assert await session.scalar(select(func.count(Source.id))) == 1
+            source = await session.get(Source, "desktop-live")
+            assert not source.enabled
+            assert json.loads(source.config_json) == {"poll_interval_seconds": 120}
+            job = await session.get(Job, second["job_id"])
+            assert job.source_id == source.id
+            assert job.status == "PENDING"
+            assert json.loads(job.input_json)["messaging_capture"] is True
+            subscriptions = list(
+                (await session.scalars(select(WorkflowSubscription))).all()
+            )
+            assert len(subscriptions) == 2
+            assert all(s.is_owner for s in subscriptions)
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
     database, service = await _service(tmp_path / "app.db")
     try:

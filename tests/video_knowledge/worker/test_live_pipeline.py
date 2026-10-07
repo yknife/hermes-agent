@@ -14,6 +14,7 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     MediaAsset,
     MediaItem,
     NotificationOutbox,
+    Source,
     WorkflowSubscription,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
@@ -138,6 +139,98 @@ class HourlyInspector(LiveInspector):
     async def inspect(self, path):
         value = await super().inspect(path)
         return MediaFileInfo(3600, value.container, value.codec, value.mime_type, {})
+
+
+@pytest.mark.asyncio
+async def test_repeated_feishu_capture_isolated_from_desktop_and_other_requests(
+    tmp_path,
+):
+    (tmp_path / "storage").mkdir()
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'shared-room.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    try:
+        live = LiveSourceService(database)
+        source, monitor, _ = await live.create(
+            "https://live.bilibili.com/544843", config={"poll_interval_seconds": 120}
+        )
+        status = await FakeLiveResolver().resolve(source.url, source.platform)
+        desktop_session = await live.begin_session(source.id, monitor.id, status)
+        await live.update(source.id, enabled=False, config_updates={})
+        service = CollectionService(
+            database,
+            Settings(
+                _env_file=None,
+                storage_root=tmp_path,
+                messaging_ingest_enabled=True,
+                messaging_max_active_per_user=5,
+                messaging_max_video_duration_seconds=3600,
+            ),
+        )
+        receipts = [
+            await service.collect(
+                source.url,
+                CollectionOrigin("feishu", "user", "chat", message, "session"),
+            )
+            for message in ("first", "second")
+        ]
+        pipeline = LiveRecordingPipeline(
+            live.state_machine,
+            live,
+            MediaService(database, tmp_path / "storage"),
+            FakeLiveResolver(),
+            HourlyRecorder(),
+            HourlyInspector(),
+            tmp_path / "storage",
+            MessagingUrlGuard(resolver=lambda *_: ["8.8.8.8"]),
+        )
+        sessions = []
+        for receipt in receipts:
+            job = await live.state_machine.claim_next("worker", 60)
+            assert job.id == receipt["job_id"]
+            assert await live.recoverable_session(source.id, job_id=job.id) is None
+            own_session = await live.begin_session(
+                source.id,
+                job.id,
+                LiveStatus(
+                    platform=status.platform,
+                    is_live=True,
+                    session_key=f"{status.session_key}:capture:{job.id}:part1",
+                ),
+            )
+            assert (
+                await live.recoverable_session(source.id, job_id=job.id)
+            ).id == own_session.id
+            assert (await live.recoverable_session(source.id)).id == desktop_session.id
+            await pipeline.run(
+                job, "worker", LeaseHeartbeat(live.state_machine, job.id, "worker", 60)
+            )
+            sessions.append(own_session.id)
+        async with database.session() as session:
+            desktop = await session.get(LiveSession, desktop_session.id)
+            assert desktop.job_id == monitor.id and desktop.status == "RECORDING"
+            saved_source = await session.get(Source, source.id)
+            assert not saved_source.enabled
+            assert json.loads(saved_source.config_json) == {
+                "poll_interval_seconds": 120
+            }
+            captures = [await session.get(LiveSession, sid) for sid in sessions]
+            assert all(c.status == "READY" for c in captures)
+            assert captures[0].media_id != captures[1].media_id
+            jobs = list((await session.scalars(select(Job))).all())
+            for receipt in receipts:
+                assert any(
+                    j.type == "INGEST_VIDEO" and j.workflow_id == receipt["workflow_id"]
+                    for j in jobs
+                )
+        # Starting desktop monitoring must not reuse a messaging capture job.
+        third = await service.collect(
+            source.url, CollectionOrigin("feishu", "user", "chat", "third", "session")
+        )
+        await live.update(source.id, enabled=True, config_updates={})
+        assert (await live.check_now(source.id)).id != third["job_id"]
+    finally:
+        await database.dispose()
 
 
 @pytest.mark.asyncio

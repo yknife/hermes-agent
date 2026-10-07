@@ -259,17 +259,29 @@ class LiveSourceService:
             value.ended_at = utc_now()
             value.updated_at = utc_now()
             source = await session.get(Source, value.source_id)
-            if source is not None and status == "READY":
+            job = await session.get(Job, value.job_id)
+            if (
+                source is not None
+                and status == "READY"
+                and job is not None
+                and job.workflow_id is None
+            ):
                 config = json.loads(source.config_json)
                 config["last_live_session_key"] = value.session_key
                 source.config_json = json.dumps(config, ensure_ascii=False)
 
-    async def recoverable_session(self, source_id: str) -> LiveSession | None:
+    async def recoverable_session(
+        self, source_id: str, *, job_id: str | None = None
+    ) -> LiveSession | None:
         async with self.database.session() as session:
             return await session.scalar(
                 select(LiveSession)
+                .join(Job, Job.id == LiveSession.job_id)
                 .where(
                     LiveSession.source_id == source_id,
+                    Job.id == job_id
+                    if job_id is not None
+                    else Job.workflow_id.is_(None),
                     LiveSession.status.in_({"RECORDING", "INTERRUPTED"}),
                     LiveSession.media_id.is_(None),
                 )
@@ -303,6 +315,7 @@ class LiveSourceService:
                 .where(
                     Job.source_id == source_id,
                     Job.type == JobType.RECORD_LIVE.value,
+                    Job.workflow_id.is_(None),
                     Job.status.in_(ACTIVE_LIVE_JOB_STATUSES),
                 )
                 .order_by(Job.created_at.desc())
