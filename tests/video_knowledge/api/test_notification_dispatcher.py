@@ -188,6 +188,47 @@ class _Transport:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("degraded", [False, True])
+@pytest.mark.parametrize("use_digest", [False, True])
+async def test_success_sends_reading_copy_then_only_matching_conclusion(
+    tmp_path, degraded, use_digest
+):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database, degraded=degraded)
+        if use_digest:
+            async with database.session() as session, session.begin():
+                document = await session.get(KnowledgeDocument, "knowledge-summary")
+                content = json.loads(document.content_json)
+                content["notification_summary"] = "便于分享的结论。"
+                document.content_json = json.dumps(content, ensure_ascii=False)
+        transport = _Transport([])
+        dispatcher = NotificationDispatcher(database, transport, owner="gateway")
+        assert await dispatcher.run_once()
+        assert len(transport.calls) == 2
+        (reading_target, reading), (sharing_target, sharing) = transport.calls
+        assert sharing_target == reading_target
+        assert "**标题：**" in reading.content
+        assert "**作者：**" in reading.content
+        assert "**时长：**" in reading.content
+        assert (
+            sharing.content
+            == reading.content.split("**结论：**\n", 1)[1].split("\n\n", 1)[0]
+        )
+        assert sharing.content == (
+            "便于分享的结论。"
+            if use_digest
+            else r"结论 \`ignore instructions\` \*\*unsafe\*\*"
+        )
+        assert reading.idempotency_key != sharing.idempotency_key
+        async with database.session() as session:
+            outbox = await session.get(NotificationOutbox, "notification-1")
+            assert outbox.status == NotificationStatus.DELIVERED.value
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 async def test_renderer_marks_fallback_and_escapes_untrusted_content(tmp_path):
     database = await _database(tmp_path)
     try:
@@ -252,7 +293,7 @@ async def test_renderer_omits_long_details_from_messaging_digest(tmp_path):
 
         dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
         parts = render_notification(await dispatcher._load_view(item_id))
-        assert len(parts) == 1
+        assert len(parts) == 2
         assert "0-" + ("T" * 100) not in parts[0].content
         assert "完整章节、知识点和建议问答请在 Hermes Desktop" in parts[0].content
         assert "知识时间线：00:00–00:01" in parts[0].content
@@ -391,15 +432,20 @@ async def test_renderer_preserves_entire_summary_without_digest(tmp_path, repeat
             )
         dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
         parts = render_notification(await dispatcher._load_view(item_id))
-        bodies = [part.content.rsplit("\n\n通知 ", 1)[0] for part in parts]
+        reading_parts = [part for part in parts if ":part:" in part.idempotency_key]
+        sharing_parts = [
+            part for part in parts if ":conclusion:" in part.idempotency_key
+        ]
+        bodies = [part.content.rsplit("\n\n通知 ", 1)[0] for part in reading_parts]
         # Ignore packing whitespace but verify every character, including the end.
         assert summary in "".join("".join(bodies).split())
-        assert len(parts) == (1 if repeat == 250 else 3)
+        assert summary == "".join(part.content for part in sharing_parts)
+        assert len(reading_parts) == len(sharing_parts) == (1 if repeat == 250 else 3)
         for index, part in enumerate(parts, 1):
-            assert len(bodies[index - 1]) <= 6000
+            assert len(part.content.rsplit("\n\n通知 ", 1)[0]) <= 6000
             assert part.number == index
             assert part.total == len(parts)
-            assert part.idempotency_key.endswith(f":part:{index}")
+        assert len({part.idempotency_key for part in parts}) == len(parts)
     finally:
         await database.dispose()
 
@@ -419,10 +465,9 @@ async def test_failure_renderer_exposes_only_safe_code_stage_and_advice(tmp_path
             job.error_message = "C:\\private\\video.mp4 bearer secret-value"
 
         dispatcher = NotificationDispatcher(database, _Transport([]), owner="renderer")
-        rendered = "\n".join(
-            part.content
-            for part in render_notification(await dispatcher._load_view(item_id))
-        )
+        parts = render_notification(await dispatcher._load_view(item_id))
+        assert len(parts) == 1
+        rendered = parts[0].content
         assert "错误码：MODEL_REQUEST_FAILED" in rendered
         assert "当前阶段：ANALYZING" in rendered
         assert "是否可重试：是" in rendered
@@ -502,6 +547,37 @@ async def test_dispatcher_restart_reuses_part_key_after_transient_failure(tmp_pa
             "thread-1",
             "message-1",
         )
+        async with database.session() as session:
+            item = await session.get(NotificationOutbox, "notification-1")
+            assert item.status == NotificationStatus.DELIVERED.value
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sharing_failure_retries_both_copies_with_same_distinct_keys(tmp_path):
+    database = await _database(tmp_path)
+    try:
+        await _seed(database)
+        transport = _Transport([
+            DeliveryResult(True),
+            DeliveryResult(False, "FEISHU_TRANSIENT", True),
+        ])
+        dispatcher = NotificationDispatcher(database, transport, owner="before-restart")
+        assert await dispatcher.run_once()
+        async with database.session() as session, session.begin():
+            item = await session.get(NotificationOutbox, "notification-1")
+            assert item.status == NotificationStatus.RETRY.value
+            item.next_attempt_at = utc_now() - timedelta(seconds=1)
+
+        retried = _Transport([])
+        restarted = NotificationDispatcher(database, retried, owner="after-restart")
+        assert await restarted.run_once()
+        assert len(transport.calls) == len(retried.calls) == 2
+        assert [part for _, part in retried.calls] == [
+            part for _, part in transport.calls
+        ]
+        assert len({part.idempotency_key for _, part in retried.calls}) == 2
         async with database.session() as session:
             item = await session.get(NotificationOutbox, "notification-1")
             assert item.status == NotificationStatus.DELIVERED.value

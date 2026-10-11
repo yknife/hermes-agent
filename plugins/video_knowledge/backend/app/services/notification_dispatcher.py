@@ -217,8 +217,10 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
     summary = summary if isinstance(summary, dict) else {}
     digest = valid_notification_digest(summary.get("notification_summary"))
     degraded = bool(summary.get("degraded")) or terminal_status == "PARTIAL"
+    conclusion = None
 
     if terminal_status in {"SUCCEEDED", "PARTIAL"} and media is not None:
+        conclusion = _text(digest or summary.get("summary"))
         heading = (
             "## ⚠️ 视频知识分析已完成（含兜底内容）"
             if degraded
@@ -233,7 +235,7 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
                 "**结论：**",
                 # A digest is optional. Preserve the complete fallback; packing
                 # below handles message limits without discarding the ending.
-                _text(digest or summary.get("summary")),
+                conclusion,
             ])
         ]
         ranges = summary.get("degraded_ranges")
@@ -292,8 +294,11 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
         sections = ["\n".join(lines)]
 
     bodies = _pack_sections(sections)
-    total = len(bodies)
-    return [
+    # Keep the reading copy's part keys stable. The sharing copy has its own
+    # namespace so retries cannot collide with an already-delivered reading part.
+    sharing_bodies = _pack_sections([conclusion]) if conclusion is not None else []
+    total = len(bodies) + len(sharing_bodies)
+    parts = [
         NotificationPart(
             content=f"{body}\n\n通知 {index}/{total}",
             idempotency_key=f"{view.outbox.id}:part:{index}",
@@ -302,6 +307,16 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
         )
         for index, body in enumerate(bodies, 1)
     ]
+    parts.extend(
+        NotificationPart(
+            content=body,
+            idempotency_key=f"{view.outbox.id}:conclusion:{index}",
+            number=len(bodies) + index,
+            total=total,
+        )
+        for index, body in enumerate(sharing_bodies, 1)
+    )
+    return parts
 
 
 class NotificationDispatcher:
