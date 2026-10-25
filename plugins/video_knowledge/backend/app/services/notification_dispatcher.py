@@ -18,10 +18,13 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     KnowledgeDocument,
     MediaItem,
     NotificationOutbox,
+    Source,
     WorkflowSubscription,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
 from plugins.video_knowledge.backend.app.services.notification_digest import (
+    WEIBO_NOTIFICATION_LIMIT,
+    readable_excerpt,
     valid_notification_digest,
 )
 from plugins.video_knowledge.backend.app.services.outbox_service import (
@@ -84,6 +87,7 @@ class _NotificationView:
     terminal_error_code: str | None
     terminal_stage: str | None
     terminal_media_id: str | None
+    source_platform: str | None = None
 
 
 def _safe_code(value: str | None, default: str = "UNKNOWN_ERROR") -> str:
@@ -221,6 +225,14 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
 
     if terminal_status in {"SUCCEEDED", "PARTIAL"} and media is not None:
         conclusion = _text(digest or summary.get("summary"))
+        if view.source_platform == "weibo":
+            # Count escaping and the ellipsis too; never split a markdown escape.
+            limit = WEIBO_NOTIFICATION_LIMIT
+            while len(conclusion) > WEIBO_NOTIFICATION_LIMIT:
+                conclusion = _text(
+                    readable_excerpt(digest or summary.get("summary"), limit=limit)
+                )
+                limit -= 1
         heading = (
             "## ⚠️ 视频知识分析已完成（含兜底内容）"
             if degraded
@@ -497,6 +509,9 @@ class NotificationDispatcher:
                 )
                 for row in rows:
                     documents.setdefault(row.document_type, row)
+            source = await session.get(
+                Source, media.source_id if media else workflow.source_id
+            )
             return _NotificationView(
                 item,
                 workflow,
@@ -508,6 +523,7 @@ class NotificationDispatcher:
                 str(terminal_error_code) if terminal_error_code else None,
                 str(terminal_stage) if terminal_stage else None,
                 str(terminal_media_id) if terminal_media_id else None,
+                source.platform if source else None,
             )
 
     async def _alert_dead(self, view: _NotificationView, error_code: str) -> None:

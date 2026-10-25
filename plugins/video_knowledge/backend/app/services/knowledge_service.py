@@ -16,6 +16,8 @@ from plugins.video_knowledge.backend.app.infrastructure.db.base import (
     AppSetting,
     Job,
     KnowledgeDocument,
+    MediaItem,
+    Source,
     Transcript,
     TranscriptSegment,
     WikiCatalog,
@@ -27,6 +29,7 @@ from plugins.video_knowledge.backend.app.services.job_service import (
     new_id,
 )
 from plugins.video_knowledge.backend.app.services.notification_digest import (
+    WEIBO_NOTIFICATION_LIMIT,
     valid_notification_digest,
 )
 from plugins.video_knowledge.backend.app.services.wiki_ingestion_service import (
@@ -161,8 +164,15 @@ class KnowledgeService:
                 await progress_callback(len(chunks) + 1, total_steps)
         self._validate_citations(bundle, segments)
         self._sanitize_unsupported_titles(bundle, segments)
+        async with self.database.session() as session:
+            platform = await session.scalar(
+                select(Source.platform)
+                .join(MediaItem, MediaItem.source_id == Source.id)
+                .where(MediaItem.id == media_id)
+            )
         notification_summary = await self._generate_notification_summary(
             bundle,
+            limit=WEIBO_NOTIFICATION_LIMIT if platform == "weibo" else 600,
             analysis_model=analysis_model,
             analysis_provider=analysis_provider,
         )
@@ -450,6 +460,7 @@ class KnowledgeService:
         self,
         bundle: AnalysisBundle,
         *,
+        limit: int = 600,
         analysis_model: str | None = None,
         analysis_provider: str | None = None,
     ) -> str | None:
@@ -463,7 +474,12 @@ class KnowledgeService:
             "将下面的完整视频知识结果总结为一段适合飞书通知的中文摘要。"
             "必须综合开头、中段和结尾，不要逐条复述，不要添加材料外事实；"
             "只写一个完整自然段，不要标题、编号列表或知识点概览；"
-            "控制在 300 至 600 个汉字，并以完整的中文句号、问号或感叹号结束。"
+            + (
+                f"用于新浪微博分享，总长度不得超过 {limit} 个字符（含标点、空格和英文）。"
+                if limit == WEIBO_NOTIFICATION_LIMIT
+                else "控制在 300 至 600 个汉字。"
+            )
+            + "以完整的中文句号、问号或感叹号结束。"
             "只返回 JSON 对象。\n\n"
             + json.dumps(
                 bundle.model_dump(mode="json"),
@@ -476,7 +492,7 @@ class KnowledgeService:
             "additionalProperties": False,
             "required": ["summary"],
             "properties": {
-                "summary": {"type": "string", "minLength": 1, "maxLength": 600}
+                "summary": {"type": "string", "minLength": 1, "maxLength": limit}
             },
         }
         for attempt in range(1, self.structured_attempts + 1):
@@ -489,7 +505,7 @@ class KnowledgeService:
                     **selection,
                 )
                 value = payload.get("summary") if isinstance(payload, dict) else None
-                digest = valid_notification_digest(value)
+                digest = valid_notification_digest(value, limit=limit)
                 if digest is not None:
                     return digest
                 logger.warning(

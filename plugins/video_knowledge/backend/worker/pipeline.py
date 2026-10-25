@@ -16,6 +16,9 @@ from plugins.video_knowledge.backend.app.domain.messaging_url import (
     messaging_video_platform,
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Job, MediaAsset
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.backend.app.services.media_service import (
     MediaService,
@@ -146,6 +149,7 @@ class IngestVideoPipeline:
         cookies_file: Path | None = None,
         proxy: str | None = None,
         messaging_url_guard: MessagingUrlGuard | None = None,
+        cookie_settings: CookieSettingsService | None = None,
     ) -> None:
         self.state_machine = state_machine
         self.media_service = media_service
@@ -160,8 +164,9 @@ class IngestVideoPipeline:
         self.transcript_normalizer = TranscriptNormalizer()
         self.thumbnail_extractor = thumbnail_extractor
         self.cookies_file = cookies_file
+        self.cookie_settings = cookie_settings
         self.proxy = proxy
-        self.messaging_url_guard = messaging_url_guard or MessagingUrlGuard()
+        self.messaging_url_guard = messaging_url_guard or MessagingUrlGuard(proxy=proxy)
 
     async def run(self, job: Job, worker_id: str, heartbeat: LeaseHeartbeat) -> None:
         if job.source_id is None:
@@ -170,6 +175,9 @@ class IngestVideoPipeline:
         url = str(payload["url"])
         is_local = payload.get("source_kind") == "local"
         is_messaging = payload.get("messaging_max_duration_seconds") is not None
+        request_proxy = (
+            self.messaging_url_guard.proxy_for_url(url) if is_messaging else self.proxy
+        )
         if is_messaging:
             await enforce_messaging_storage_limit(self.storage_root, payload)
         request_cookies_file = (
@@ -179,6 +187,9 @@ class IngestVideoPipeline:
             if payload.get("cookies_file")
             else self.cookies_file
         )
+        if not payload.get("cookies_file") and not is_local and self.cookie_settings:
+            source = await self.media_service.get_source(job.source_id)
+            request_cookies_file = await self.cookie_settings.resolve(source.platform)
 
         # Automatic retries keep the previously reported progress. Replaying the
         # deterministic pipeline must therefore never emit an earlier percentage.
@@ -195,15 +206,26 @@ class IngestVideoPipeline:
                 stage=stage,
                 progress=progress_floor,
                 message=message,
+                media_id=job.media_id,
             )
 
         await self._check_cancel(job.id, worker_id, heartbeat)
         resumed_media = None
+        replace_media_id = None
         resumed_assets: list[MediaAsset] = []
         if job.media_id is not None:
             resumed_media, resumed_assets = await self.media_service.get_media(
                 job.media_id
             )
+            if not is_local and any(
+                asset.kind == MediaAssetKind.VIDEO.value
+                and (asset.mime_type or "").startswith("image/")
+                for asset in resumed_assets
+            ):
+                # Older downloads could register a Weibo scrubber as VIDEO.
+                # Reacquire on retry; preserve original files and media identity.
+                replace_media_id = resumed_media.id
+                resumed_media, resumed_assets = None, []
         resume_asr = any(
             asset.kind == MediaAssetKind.AUDIO.value and asset.status == "READY"
             for asset in resumed_assets
@@ -247,10 +269,11 @@ class IngestVideoPipeline:
                 messaging_platform: str | None = None
                 if is_messaging:
                     url = await self.messaging_url_guard.validate_input(url)
+                    request_proxy = self.messaging_url_guard.proxy_for_url(url)
                     messaging_platform = messaging_video_platform(url)
                 await report_progress(JobStage.PROBING, 5, "正在探测视频元数据")
                 probe = await self.downloader.probe(
-                    url, cookies_file=request_cookies_file, proxy=self.proxy
+                    url, cookies_file=request_cookies_file, proxy=request_proxy
                 )
                 if is_messaging:
                     if messaging_platform is None:
@@ -260,12 +283,33 @@ class IngestVideoPipeline:
                     url = await self.messaging_url_guard.validate_probe(
                         probe, expected_platform=messaging_platform
                     )
+                    request_proxy = self.messaging_url_guard.proxy_for_url(url)
                 if probe.is_live:
                     raise ValueError("直播地址请使用直播采集任务")
                 enforce_messaging_duration_limit(probe, payload)
             await self.media_service.update_source_probe(job.source_id, probe)
+            # A new workflow may share a source with an earlier failed ingest,
+            # without having inherited its media_id. Resolve the actual identity
+            # after probing rather than inserting a duplicate media row.
+            if job.media_id is None:
+                existing = await self.media_service.find_media(
+                    job.source_id, probe.external_id
+                )
+                if existing is not None:
+                    existing, existing_assets = await self.media_service.get_media(
+                        existing.id
+                    )
+                    if not is_local and any(
+                        asset.kind == MediaAssetKind.VIDEO.value
+                        and (asset.mime_type or "").startswith("image/")
+                        for asset in existing_assets
+                    ):
+                        replace_media_id = existing.id
+                    else:
+                        resumed_media, resumed_assets = existing, existing_assets
+                        job.media_id = existing.id
         temp_dir = self.storage_root / "temp" / job.id
-        if job.media_id is None:
+        if resumed_media is None:
             await self._check_cancel(job.id, worker_id, heartbeat)
             last_progress = 10.0
             if is_local:
@@ -304,7 +348,7 @@ class IngestVideoPipeline:
                         temp_dir,
                         max_height=int(payload.get("max_height", 1080)),
                         cookies_file=request_cookies_file,
-                        proxy=self.proxy,
+                        proxy=request_proxy,
                         on_progress=progress,
                     )
                 )
@@ -335,6 +379,7 @@ class IngestVideoPipeline:
                 download,
                 info,
                 thumbnail_path=thumbnail_path,
+                replace_media_id=replace_media_id,
             )
         else:
             if resumed_media is None:
@@ -359,7 +404,7 @@ class IngestVideoPipeline:
                 temp_dir / "subtitles",
                 track,
                 cookies_file=request_cookies_file,
-                proxy=self.proxy,
+                proxy=request_proxy,
             )
             await self._check_cancel(job.id, worker_id, heartbeat)
             await report_progress(

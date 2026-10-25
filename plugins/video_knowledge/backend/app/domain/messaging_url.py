@@ -9,6 +9,7 @@ _DOUYIN_HOSTS = {"douyin.com", "www.douyin.com"}
 _DOUYIN_SHARE_HOSTS = {"iesdouyin.com", "www.iesdouyin.com"}
 _DOUYIN_SHORT_HOST = "v.douyin.com"
 _WEIBO_SHORT_HOST = "t.cn"
+_YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
 _XIAOHONGSHU_HOST = "www.xiaohongshu.com"
 _XIAOHONGSHU_SHORT_HOSTS = {
     "xhslink.cn",
@@ -52,6 +53,11 @@ def validate_messaging_video_url(
 
     path = parsed.path
     query = parsed.query
+    if platform == "youtube":
+        # These aliases embed the video ID; no external redirect is needed.
+        # Drop playlist/share parameters so one request always collects one video.
+        video_id = _youtube_video_id(host, path, query)
+        return f"https://www.youtube.com/watch?v={video_id}"
     if host == "live.bilibili.com":
         path = path.rstrip("/")
         query = ""
@@ -122,6 +128,8 @@ def messaging_live_platform(value: str) -> str | None:
 
 
 def _platform_for_shape(host: str, path: str, query: str) -> str | None:
+    if _youtube_video_id(host, path, query) is not None:
+        return "youtube"
     live = messaging_live_platform(urlunsplit(("https", host, path, query, "")))
     if live:
         return live
@@ -175,3 +183,20 @@ def _douyin_modal_id(path: str, query: str) -> str | None:
         return None
     values = parse_qs(query, keep_blank_values=True).get("modal_id", [])
     return values[0] if len(values) == 1 and values[0].isdigit() else None
+
+
+def _youtube_video_id(host: str, path: str, query: str) -> str | None:
+    if host == "youtu.be":
+        match = re.fullmatch(r"/([A-Za-z0-9_-]{11})/?", path)
+        return match[1] if match else None
+    if host not in _YOUTUBE_HOSTS:
+        return None
+    if path == "/watch":
+        values = parse_qs(query, keep_blank_values=True).get("v", [])
+        return (
+            values[0]
+            if len(values) == 1 and re.fullmatch(r"[A-Za-z0-9_-]{11}", values[0])
+            else None
+        )
+    match = re.fullmatch(r"/(?:shorts|live|embed)/([A-Za-z0-9_-]{11})/?", path)
+    return match[1] if match else None

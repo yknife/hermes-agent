@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import pytest
+from plugins.video_knowledge.backend.app.core.config import Settings
 from plugins.video_knowledge.backend.app.domain.enums import (
     JobStage,
     JobStatus,
@@ -12,6 +13,9 @@ from plugins.video_knowledge.backend.app.domain.enums import (
 )
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Base, Job
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.backend.app.services.media_service import (
     MediaService,
@@ -36,6 +40,7 @@ from plugins.video_knowledge.backend.media_adapters.errors import (
     StorageCapacityError,
 )
 from plugins.video_knowledge.backend.media_adapters.models import MediaFileInfo
+from plugins.video_knowledge.backend.media_adapters.security import MessagingUrlGuard
 from plugins.video_knowledge.backend.transcript import (
     ASRChunkResult,
     ASRConfig,
@@ -106,15 +111,24 @@ async def test_messaging_storage_limit_is_rechecked_by_worker(monkeypatch, tmp_p
 
 
 class FakeDownloader(YtDlpAdapter):
+    platform = "fixture"
+
+    def __init__(self):
+        super().__init__()
+        self.request_proxies = []
+        self.request_cookies = []
+
     async def probe(
         self, url: str, *, cookies_file: Path | None = None, proxy: str | None = None
     ) -> MediaProbe:
+        self.request_proxies.append(("probe", proxy))
+        self.request_cookies.append(cookies_file)
         del cookies_file, proxy
         return MediaProbe(
             external_id="fixture",
             title="字幕视频",
             webpage_url=url,
-            platform="fixture",
+            platform=self.platform,
             subtitles=(SubtitleTrack("zh-CN", False, ("vtt",)),),
         )
 
@@ -128,6 +142,8 @@ class FakeDownloader(YtDlpAdapter):
         proxy: str | None = None,
         on_progress: Callable[[DownloadProgress], Awaitable[None]] | None = None,
     ) -> DownloadResult:
+        self.request_proxies.append(("download", proxy))
+        self.request_cookies.append(cookies_file)
         del url, max_height, cookies_file, proxy
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
         path = target_dir / "source.mp4"
@@ -145,6 +161,8 @@ class FakeDownloader(YtDlpAdapter):
         cookies_file: Path | None = None,
         proxy: str | None = None,
     ) -> SubtitleDownloadResult:
+        self.request_proxies.append(("subtitle", proxy))
+        self.request_cookies.append(cookies_file)
         del url, cookies_file, proxy
         await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
         path = target_dir / "subtitle.zh-CN.vtt"
@@ -222,13 +240,60 @@ class NeverTranscriber(FasterWhisperAdapter):
 
 
 @pytest.mark.asyncio
-async def test_ingest_pipeline_creates_searchable_transcript(tmp_path: Path) -> None:
+@pytest.mark.parametrize("legacy_image", [False, True])
+@pytest.mark.parametrize("linked_media", [False, True])
+@pytest.mark.parametrize(
+    "youtube_messaging,proxy,cookie_mode",
+    [
+        (False, None, "none"),
+        (True, "", "none"),
+        (True, "http://127.0.0.1:7890", "none"),
+        (True, "http://127.0.0.1:7890", "platform"),
+        (True, "", "per_task"),
+    ],
+)
+async def test_ingest_pipeline_creates_searchable_transcript(
+    tmp_path: Path,
+    youtube_messaging: bool,
+    proxy,
+    cookie_mode,
+    monkeypatch,
+    legacy_image,
+    linked_media,
+) -> None:
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.media_adapters.security.getproxies",
+        lambda: {"https": proxy} if proxy else {},
+    )
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'pipeline.db'}")
     async with database.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
     source, pending, _media, _duplicate = await SourceService(database).ingest(
-        "https://example.test/subtitled"
+        "https://www.youtube.com/watch?v=06rHoEpiuYY"
+        if youtube_messaging
+        else "https://example.test/subtitled"
     )
+    if youtube_messaging:
+        async with database.session() as session, session.begin():
+            queued = await session.get(Job, pending.id)
+            payload = json.loads(queued.input_json)
+            payload["messaging_max_duration_seconds"] = 0
+            queued.input_json = json.dumps(payload)
+    cookie_settings = CookieSettingsService(database, Settings(_env_file=None))
+    expected_cookies = None
+    if cookie_mode != "none":
+        platform_cookies = tmp_path / "platform-cookies.txt"
+        platform_cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        await cookie_settings.update("youtube", str(platform_cookies))
+        expected_cookies = platform_cookies.resolve()
+    if cookie_mode == "per_task":
+        expected_cookies = tmp_path / "task-cookies.txt"
+        expected_cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+        async with database.session() as session, session.begin():
+            queued = await session.get(Job, pending.id)
+            payload = json.loads(queued.input_json)
+            payload["cookies_file"] = str(expected_cookies)
+            queued.input_json = json.dumps(payload)
     state_machine = JobStateMachine(database)
     worker_id = "test-worker"
     job = await state_machine.claim_next(worker_id, lease_seconds=60)
@@ -241,11 +306,36 @@ async def test_ingest_pipeline_creates_searchable_transcript(tmp_path: Path) -> 
         message="模拟自动重试前的进度",
     )
     media_service = MediaService(database, tmp_path / "storage")
+    if legacy_image:
+        old_file = tmp_path / "source.jpg"
+        old_file.write_bytes(b"legacy-scrubber")
+        old_media = await media_service.register(
+            source.id,
+            MediaProbe(
+                external_id="fixture",
+                title="legacy",
+                webpage_url=source.url,
+                platform="weibo",
+            ),
+            DownloadResult(old_file, None),
+            MediaFileInfo(0.04, "image2", "mjpeg", "image/jpeg", {}),
+        )
+        job.media_id = old_media.id if linked_media else None
+        # register() attached the running job; model the separate workflow whose
+        # persisted media_id is absent, not just a detached object's field.
+        async with database.session() as session, session.begin():
+            queued = await session.get(Job, job.id)
+            queued.media_id = job.media_id
+        _, original_assets = await media_service.get_media(old_media.id)
+        original_path = tmp_path / "storage" / original_assets[0].relative_path
     transcript_service = TranscriptService(database, tmp_path / "storage")
+    downloader = FakeDownloader()
+    if youtube_messaging:
+        downloader.platform = "youtube"
     pipeline = IngestVideoPipeline(
         state_machine,
         media_service,
-        FakeDownloader(),
+        downloader,
         FakeInspector(),
         tmp_path / "storage",
         transcript_service,
@@ -260,15 +350,34 @@ async def test_ingest_pipeline_creates_searchable_transcript(tmp_path: Path) -> 
         120,
         1.5,
         thumbnail_extractor=FakeFFmpeg(),
+        messaging_url_guard=MessagingUrlGuard(
+            resolver=lambda _host, _port: ("2001::1",) if proxy else ("8.8.8.8",)
+        ),
+        cookie_settings=cookie_settings,
     )
     heartbeat = LeaseHeartbeat(state_machine, job.id, worker_id, 60)
     await pipeline.run(job, worker_id, heartbeat)
+    assert downloader.request_proxies == [
+        (operation, proxy) for operation in ("probe", "download", "subtitle")
+    ]
+    assert downloader.request_cookies == [expected_cookies] * 3
 
     async with database.session() as session:
         completed = await session.get(Job, pending.id)
         assert completed is not None
         assert completed.status == JobStatus.SUCCEEDED.value
         assert completed.media_id is not None
+    if legacy_image:
+        assert completed.media_id == old_media.id
+        assert original_path.read_bytes() == b"legacy-scrubber"
+        repaired, repaired_assets = await media_service.get_media(old_media.id)
+        assert repaired.duration_seconds == 3.0
+        assert (
+            TranscriptService(database, tmp_path / "storage")
+            .resolve_media_video(repaired.id, repaired_assets)
+            .read_bytes()
+            == b"fake-video"
+        )
     transcript = await TranscriptService(database, tmp_path / "storage").latest(
         completed.media_id
     )
@@ -287,6 +396,27 @@ async def test_ingest_pipeline_creates_searchable_transcript(tmp_path: Path) -> 
     )
     assert len(matches) == 1
     assert source.external_id is None
+    if legacy_image and not linked_media:
+        # A later workflow must also reuse the now-valid video, without another
+        # download or losing the durable job/media association.
+        followup = await state_machine.create(
+            job_type=JobType.INGEST_VIDEO,
+            source_id=source.id,
+            input_data=json.loads(job.input_json),
+        )
+        next_job = await state_machine.claim_next(worker_id, lease_seconds=60)
+        assert next_job.id == followup.id and next_job.media_id is None
+        downloader.request_proxies.clear()
+        await pipeline.run(
+            next_job,
+            worker_id,
+            LeaseHeartbeat(state_machine, next_job.id, worker_id, 60),
+        )
+        assert [op for op, _ in downloader.request_proxies] == ["probe", "subtitle"]
+        async with database.session() as session:
+            reused = await session.get(Job, followup.id)
+            assert reused.status == JobStatus.SUCCEEDED.value
+            assert reused.media_id == old_media.id
     await database.dispose()
 
 

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from plugins.video_knowledge.backend.media_adapters.errors import (
     AuthenticationRequiredError,
+    InvalidMediaError,
     MediaToolError,
     MediaUnavailableError,
     RateLimitedError,
@@ -39,6 +40,64 @@ class FakeRunner:
         del on_stdout, on_stderr
         self.args = list(args)
         return self.result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("height,expected", [(720, "mp4_720p"), (1080, "mp4_hd")])
+async def test_download_skips_weibo_scrubber_in_real_format_selection(
+    tmp_path, height, expected
+):
+    from yt_dlp import YoutubeDL
+
+    (tmp_path / "source.mp4").write_bytes(b"fixture")
+    runner = FakeRunner((0, "", ""))
+    await YtDlpAdapter(runner=runner).download(
+        "https://weibo.com/123/video", tmp_path, max_height=height
+    )
+    selector = runner.args[runner.args.index("--format") + 1]
+    formats = [
+        {"format_id": "scrubber_hd", "ext": "jpg", "height": 320},
+        {
+            "format_id": "mp4_hd",
+            "ext": "mp4",
+            "height": 960,
+            "vcodec": "avc1",
+            "acodec": "mp4a",
+        },
+        {
+            "format_id": "mp4_720p",
+            "ext": "mp4",
+            "height": 1280,
+            "vcodec": "avc1",
+            "acodec": "mp4a",
+        },
+    ]
+    with YoutubeDL({"quiet": True}) as ydl:
+        select_format = ydl.build_format_selector(selector)
+        selected = list(
+            select_format({"formats": formats, "incomplete_formats": False})
+        )
+        assert [item["format_id"] for item in selected] == [expected]
+        assert (
+            list(select_format({"formats": formats[:1], "incomplete_formats": False}))
+            == []
+        )
+
+
+@pytest.mark.asyncio
+async def test_ffprobe_rejects_image_misreported_as_short_video(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"fixture")
+    runner = FakeRunner((
+        0,
+        json.dumps({
+            "format": {"duration": "0.04", "format_name": "image2"},
+            "streams": [{"codec_type": "video", "codec_name": "mjpeg"}],
+        }),
+        "",
+    ))
+    with pytest.raises(InvalidMediaError, match="图片"):
+        await FFprobeAdapter(runner=runner).inspect(source)
 
 
 class FakeFFmpegRunner(FakeRunner):
@@ -178,6 +237,11 @@ async def test_probe_uses_argument_list_and_maps_metadata() -> None:
     "stderr,error,expected",
     [
         ("only available for registered users", AuthenticationRequiredError, "Cookies"),
+        (
+            "Sign in to confirm you're not a bot",
+            AuthenticationRequiredError,
+            "人机验证",
+        ),
         ("Unable to extract initial state", MediaToolError, "页面数据"),
     ],
 )
@@ -190,6 +254,16 @@ async def test_bilibili_fallback_errors_have_safe_actionable_messages(
             "https://www.bilibili.com/video/BV1UbpP6EELq"
         )
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("proxy", ["", "http://127.0.0.1:7890"])
+async def test_probe_pins_selected_proxy_including_explicit_direct(proxy):
+    runner = FakeRunner((0, json.dumps({"id": "fixture", "title": "fixture"}), ""))
+    await YtDlpAdapter(runner=runner).probe(
+        "https://www.youtube.com/watch?v=06rHoEpiuYY", proxy=proxy
+    )
+    assert runner.args[runner.args.index("--proxy") + 1] == proxy
 
 
 @pytest.mark.asyncio

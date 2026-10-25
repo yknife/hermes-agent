@@ -183,10 +183,42 @@ async def test_same_message_replay_reuses_atomic_receipt_and_job(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_youtube_aliases_share_workflow_with_real_url_guard(tmp_path):
+    database, service = await _service(
+        tmp_path / "app.db", messaging_max_active_per_user=3
+    )
+    service.url_guard = MessagingUrlGuard(resolver=lambda _host, _port: ("8.8.8.8",))
+    try:
+        first = await service.collect(
+            "https://youtu.be/06rHoEpiuYY?si=token", _origin()
+        )
+        second = await service.collect(
+            "https://www.youtube.com/watch?v=06rHoEpiuYY&list=PLexample",
+            _origin(message="second"),
+        )
+        assert first["workflow_id"] == second["workflow_id"]
+        assert first["job_id"] == second["job_id"]
+        async with database.session() as session:
+            job = await session.get(Job, first["job_id"])
+            source = await session.get(Source, job.source_id)
+            assert job.type == "INGEST_VIDEO"
+            assert source.type == "VIDEO"
+            assert source.platform == "youtube"
+            assert source.canonical_url == "https://www.youtube.com/watch?v=06rHoEpiuYY"
+            assert json.loads(job.input_json)["auto_analyze"] is True
+            assert (
+                await session.scalar(select(func.count(WorkflowSubscription.id))) == 2
+            )
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("platform", "url"),
     [
         ("bilibili", "https://b23.tv/Cookie123"),
+        ("youtube", "https://www.youtube.com/watch?v=06rHoEpiuYY"),
         ("douyin", "https://www.douyin.com/video/7672313492216548651"),
         (
             "xiaohongshu",
@@ -319,6 +351,32 @@ async def test_failed_owner_can_retry_latest_once_and_subscriber_cannot(tmp_path
             assert workflow.terminal_generation == 1
             assert len(outbox) == 4
             assert len({item.idempotency_key for item in outbox}) == 4
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_code", ["INVALID_MEDIA", "AUTH_REQUIRED", "RATE_LIMITED"]
+)
+async def test_retry_does_not_confuse_missing_cookies_with_failure_cause(
+    tmp_path, error_code
+):
+    database, service = await _service(tmp_path / "app.db")
+    try:
+        accepted = await service.collect(
+            "https://www.douyin.com/video/7672313492216548651", _origin()
+        )
+        machine = JobStateMachine(database)
+        claimed = await machine.claim_next("worker-a", 60)
+        await machine.fail(
+            claimed.id, "worker-a", error_code=error_code, error_message="failure"
+        )
+        result = await service.retry(accepted["workflow_id"], _origin())
+        assert result["previous_error_code"] == error_code
+        assert result["cookies_refreshed"] is False
+        assert ("Cookies" in result["message"]) == (error_code == "AUTH_REQUIRED")
+        assert "不能推断为缺少 Cookies" in result["diagnostic_note"]
     finally:
         await database.dispose()
 

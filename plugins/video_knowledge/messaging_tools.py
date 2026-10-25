@@ -174,7 +174,10 @@ MESSAGING_TOOLS = tuple(
     for name, description, contract, handler in (
         (
             "collect_video",
-            "Queue one Bilibili, Douyin, Xiaohongshu, or Weibo video for collection and analysis. "
+            "Queue one YouTube, Bilibili, Douyin, Xiaohongshu, or Weibo video "
+            "for collection and analysis. "
+            "YouTube accepts watch?v=, youtu.be, shorts, embed, and live/{video_id} replay links; "
+            "playlists, channels, and ongoing YouTube live recording are not supported. "
             "Also accepts Bilibili live rooms at https://live.bilibili.com/{room_id}; "
             "Douyin live rooms at https://live.douyin.com/{room_id} or v.douyin.com shares; "
             "and Xiaohongshu livestream room URLs or official xhslink share links. "

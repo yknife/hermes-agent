@@ -6,6 +6,157 @@ from plugins.video_knowledge.backend.media_adapters.security import MessagingUrl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("proxy", ["http://127.0.0.1:7890", "socks5://127.0.0.1:7890"])
+async def test_proxy_resolves_allowlisted_youtube_instead_of_polluted_local_dns(
+    monkeypatch, proxy
+):
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.media_adapters.security.getproxies",
+        lambda: {"https": proxy},
+    )
+
+    def resolver(*_args):
+        raise AssertionError("A remote-DNS proxy must not use local destination DNS")
+
+    guard = MessagingUrlGuard(resolver=resolver)
+    url = "https://www.youtube.com/watch?v=06rHoEpiuYY"
+    assert await guard.validate_input(url) == url
+    assert (
+        await guard.validate_probe(
+            MediaProbe(
+                external_id="06rHoEpiuYY",
+                title="fixture",
+                webpage_url=url,
+                platform="youtube",
+            ),
+            expected_platform="youtube",
+        )
+        == url
+    )
+    assert guard.proxy_for_url(url) == proxy.replace("socks5:", "socks5h:")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["direct", "bypass", "no_proxy"])
+async def test_polluted_dns_still_rejected_without_proxy_route(monkeypatch, mode):
+    monkeypatch.setattr(
+        "plugins.video_knowledge.backend.media_adapters.security.getproxies",
+        lambda: (
+            {"https": "http://127.0.0.1:7890", "no": "youtube.com"}
+            if mode == "bypass"
+            else {}
+        ),
+    )
+    guard = MessagingUrlGuard(
+        resolver=lambda *_: ("69.171.235.22", "2001::1"),
+        proxy="" if mode == "direct" else None,
+    )
+    url = "https://www.youtube.com/watch?v=06rHoEpiuYY"
+    assert guard.proxy_for_url(url) == ""
+    with pytest.raises(UnsafeUrlError, match="私有或本机"):
+        await guard.validate_input(url)
+
+
+@pytest.mark.asyncio
+async def test_proxy_does_not_allow_arbitrary_hosts_ips_or_private_streams():
+    guard = MessagingUrlGuard(
+        proxy="http://127.0.0.1:7890", resolver=lambda *_: ("127.0.0.1",)
+    )
+    for url in [
+        "http://127.0.0.1/private",
+        "https://youtube.com.evil.test/watch?v=06rHoEpiuYY",
+    ]:
+        with pytest.raises(UnsafeUrlError):
+            await guard.validate_input(url)
+    with pytest.raises(UnsafeUrlError):
+        await guard.validate_live_stream("https://cdn.example.test/stream.m3u8")
+
+
+@pytest.mark.asyncio
+async def test_short_link_http_client_uses_selected_proxy_and_checks_redirect(
+    monkeypatch,
+):
+    real_client = httpx.AsyncClient
+    proxies = []
+
+    def client(**kwargs):
+        proxies.append(kwargs.pop("proxy"))
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    guard = MessagingUrlGuard(
+        proxy="http://127.0.0.1:7890",
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(
+                302, headers={"location": "http://127.0.0.1/private"}
+            )
+        ),
+    )
+    with pytest.raises(UnsafeUrlError):
+        await guard.validate_input("https://b23.tv/AbCd123")
+    assert proxies == ["http://127.0.0.1:7890"]
+
+
+@pytest.mark.asyncio
+async def test_youtube_alias_is_normalized_before_dns_and_probe_validation():
+    seen = []
+
+    def resolver(host, port):
+        seen.append((host, port))
+        return ("8.8.8.8",)
+
+    guard = MessagingUrlGuard(resolver=resolver)
+    canonical = "https://www.youtube.com/watch?v=06rHoEpiuYY"
+    assert (
+        await guard.validate_input("https://youtu.be/06rHoEpiuYY?si=token") == canonical
+    )
+    assert seen == [("www.youtube.com", 443)]
+    assert (
+        await guard.validate_probe(
+            MediaProbe(
+                external_id="06rHoEpiuYY",
+                title="fixture",
+                webpage_url=canonical,
+                platform="Youtube",
+            ),
+            expected_platform="youtube",
+        )
+        == canonical
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "platform,url",
+    [
+        ("generic", "https://www.youtube.com/watch?v=06rHoEpiuYY"),
+        ("YoutubeTab", "https://www.youtube.com/watch?v=06rHoEpiuYY"),
+        ("Youtube", "https://www.bilibili.com/video/BV1GJ411x7h7"),
+        ("Youtube", "https://127.0.0.1/watch?v=06rHoEpiuYY"),
+    ],
+)
+async def test_youtube_probe_rejects_wrong_extractor_or_destination(platform, url):
+    guard = MessagingUrlGuard(resolver=lambda _host, _port: ("8.8.8.8",))
+    with pytest.raises(UnsafeUrlError):
+        await guard.validate_probe(
+            MediaProbe(
+                external_id="06rHoEpiuYY",
+                title="fixture",
+                webpage_url=url,
+                platform=platform,
+            ),
+            expected_platform="youtube",
+        )
+
+
+@pytest.mark.asyncio
+async def test_youtube_canonical_destination_rejects_private_dns():
+    guard = MessagingUrlGuard(resolver=lambda _host, _port: ("127.0.0.1",))
+    with pytest.raises(UnsafeUrlError, match="私有或本机"):
+        await guard.validate_input("https://youtu.be/06rHoEpiuYY")
+
+
+@pytest.mark.asyncio
 async def test_direct_bilibili_url_requires_only_global_dns_answers() -> None:
     seen: list[tuple[str, int]] = []
 

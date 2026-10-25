@@ -25,6 +25,45 @@ from plugins.video_knowledge.backend.app.services.notification_dispatcher import
 from sqlalchemy import select
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_digest", [False, True])
+@pytest.mark.parametrize(
+    "summary", ["短结论。", "中" * 139 + "。", "中" * 140 + "。", "*" * 200 + "。"]
+)
+async def test_weibo_conclusion_limit_applies_to_both_copies(
+    tmp_path, use_digest, summary
+):
+    database = await _database(tmp_path)
+    try:
+        item_id = await _seed(database)
+        async with database.session() as session, session.begin():
+            source = await session.get(Source, "source-1")
+            source.platform = "weibo"
+            source.canonical_url = "https://t.cn/example"
+            document = await session.get(KnowledgeDocument, "knowledge-summary")
+            content = json.loads(document.content_json)
+            content["summary"] = summary
+            if use_digest:
+                content["notification_summary"] = summary
+            document.content_json = json.dumps(content, ensure_ascii=False)
+        dispatcher = NotificationDispatcher(database, _Transport([]), owner="gateway")
+        parts = render_notification(await dispatcher._load_view(item_id))
+        assert len(parts) == 2
+        conclusion = parts[1].content
+        assert 0 < len(conclusion) <= 140
+        assert (
+            conclusion
+            == parts[0].content.split("**结论：**\n", 1)[1].split("\n\n", 1)[0]
+        )
+        if len(summary) <= 140:
+            assert conclusion == summary
+        else:
+            assert conclusion.endswith("…")
+            assert not conclusion[:-1].endswith("\\")
+    finally:
+        await database.dispose()
+
+
 async def _database(tmp_path) -> Database:
     database = Database(f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}")
     async with database.engine.begin() as connection:

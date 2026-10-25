@@ -6,6 +6,7 @@ import re
 
 _NUMBERED_ITEM = re.compile(r"(?:^|\s)[1-9]\d?[.．、)）](?:\s|$)")
 _SENTENCE_END = ("。", "！", "？")
+WEIBO_NOTIFICATION_LIMIT = 140
 
 
 def valid_notification_digest(value: object, *, limit: int = 600) -> str | None:

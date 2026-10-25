@@ -4,11 +4,16 @@ import os
 import socket
 from uuid import uuid4
 
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+
 from plugins.video_knowledge.backend.app.core.config import Settings, get_settings
 from plugins.video_knowledge.backend.app.domain.enums import JobType
 from plugins.video_knowledge.backend.app.domain.errors import JobLeaseLostError
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Job
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
+from plugins.video_knowledge.backend.app.services.cookie_settings_service import (
+    CookieSettingsService,
+)
 from plugins.video_knowledge.backend.app.services.job_service import JobStateMachine
 from plugins.video_knowledge.backend.app.services.knowledge_service import (
     KnowledgeService,
@@ -100,6 +105,7 @@ class WorkerRunner:
             self.settings.asr_overlap_seconds,
             thumbnail_extractor=self.thumbnail_extractor,
             cookies_file=self.settings.yt_dlp_cookies_file,
+            cookie_settings=CookieSettingsService(database, self.settings),
             proxy=self.settings.download_proxy,
         )
         self.live_pipeline = LiveRecordingPipeline(
@@ -207,15 +213,30 @@ class WorkerRunner:
         except JobLeaseLostError:
             logger.warning("job_abandoned_after_lease_loss", extra={"job_id": job.id})
         except Exception as exc:
-            logger.exception("job_pipeline_failed", extra={"job_id": job.id})
+            database_error = isinstance(exc, SQLAlchemyError)
+            if database_error:
+                # SQLAlchemy exception text includes bound metadata and signed URLs.
+                logger.error("job_database_failed", extra={"job_id": job.id})
+            else:
+                logger.exception("job_pipeline_failed", extra={"job_id": job.id})
             try:
                 delay = min(30.0 * (2 ** max(0, job.attempt_count - 1)), 300.0)
-                retryable = getattr(exc, "retryable", True)
+                retryable = not isinstance(exc, IntegrityError) and getattr(
+                    exc, "retryable", True
+                )
                 await self.state_machine.fail(
                     job.id,
                     self.worker_id,
-                    error_code=getattr(exc, "code", "PIPELINE_ERROR"),
-                    error_message=str(exc) or type(exc).__name__,
+                    error_code=(
+                        "DATABASE_ERROR"
+                        if database_error
+                        else getattr(exc, "code", "PIPELINE_ERROR")
+                    ),
+                    error_message=(
+                        "媒体数据保存失败，请检查数据库记录后重试"
+                        if database_error
+                        else str(exc) or type(exc).__name__
+                    ),
                     retry_delay_seconds=(
                         delay
                         if retryable and job.attempt_count < job.max_attempts

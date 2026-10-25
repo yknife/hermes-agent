@@ -307,6 +307,7 @@ class JobStateMachine:
         stage: JobStage,
         progress: float,
         message: str,
+        media_id: str | None = None,
     ) -> Job:
         if not 0 <= progress <= 100:
             raise JobProgressError("任务进度必须位于 0 到 100 之间")
@@ -318,6 +319,8 @@ class JobStateMachine:
                     "任务总进度不可倒退",
                     details={"current": job.progress, "requested": progress},
                 )
+            if media_id is not None:
+                job.media_id = media_id
             job.stage = stage.value
             job.progress = progress
             job.updated_at = utc_now()

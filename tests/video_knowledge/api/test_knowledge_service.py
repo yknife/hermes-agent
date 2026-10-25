@@ -31,6 +31,7 @@ class FakeHermesClient:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.digest_requests = []
         self.selections: list[tuple[str | None, str | None]] = []
 
     async def generate_json(
@@ -43,11 +44,11 @@ class FakeHermesClient:
         model: str | None = None,
         provider: str | None = None,
     ) -> dict[str, object]:
-        del schema
         self.calls += 1
         self.selections.append((provider, model))
         assert "不可信" in system_prompt
         if schema_name == "video_knowledge_notification_summary":
+            self.digest_requests.append((user_prompt, schema))
             assert "完整视频知识结果" in user_prompt
             return {"summary": "大模型生成的飞书全片摘要。"}
         assert schema_name == "video_knowledge_analysis"
@@ -802,7 +803,10 @@ async def test_retryable_client_failure_is_not_hidden_by_map_fallback() -> None:
 
 
 @pytest.mark.asyncio
-async def test_analysis_persists_four_versioned_documents(tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform", ["example", "weibo"])
+async def test_analysis_persists_four_versioned_documents(
+    tmp_path: Path, platform
+) -> None:
     database = Database(f"sqlite+aiosqlite:///{tmp_path / 'knowledge.db'}")
     async with database.engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -810,6 +814,9 @@ async def test_analysis_persists_four_versioned_documents(tmp_path: Path) -> Non
     source, _job, _media, _duplicate = await SourceService(database).ingest(
         "https://example.test/knowledge"
     )
+    async with database.session() as session, session.begin():
+        stored_source = await session.get(type(source), source.id)
+        stored_source.platform = platform
     media_file = tmp_path / "source.mp4"
     media_file.write_bytes(b"video")
     media = await MediaService(database, storage).register(
@@ -852,6 +859,12 @@ async def test_analysis_persists_four_versioned_documents(tmp_path: Path) -> Non
     }
     assert [item.id for item in reused] == [item.id for item in first]
     assert client.calls == 2
+    prompt, schema = client.digest_requests[0]
+    assert schema["properties"]["summary"]["maxLength"] == (
+        140 if platform == "weibo" else 600
+    )
+    if platform == "weibo":
+        assert "不得超过 140" in prompt
     assert progress == [(1, 2), (2, 2)]
     summary = next(item for item in first if item.document_type == "summary")
     assert json.loads(summary.content_json)["degraded"] is False
@@ -892,5 +905,27 @@ async def test_notification_digest_retries_dangling_model_outline(tmp_path):
         service = KnowledgeService(database, client, structured_attempts=2)
         assert await service._generate_notification_summary(bundle) is None
         assert client.calls == 2
+    finally:
+        await database.dispose()
+
+
+@pytest.mark.asyncio
+async def test_weibo_digest_retries_over_limit_response(tmp_path):
+    class DigestClient:
+        def __init__(self):
+            self.responses = iter(["中" * 140 + "。", "中" * 139 + "。"])
+
+        async def generate_json(self, **kwargs):
+            return {"summary": next(self.responses)}
+
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'digest-limit.db'}")
+    try:
+        service = KnowledgeService(database, DigestClient(), structured_attempts=2)
+        bundle = AnalysisBundle(
+            summary="完整结论。", chapters=[], knowledge_points=[], suggested_qa=[]
+        )
+        assert await service._generate_notification_summary(bundle, limit=140) == (
+            "中" * 139 + "。"
+        )
     finally:
         await database.dispose()

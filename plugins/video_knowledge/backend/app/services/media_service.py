@@ -447,6 +447,15 @@ class MediaService:
             source.platform = probe.platform[:64]
             source.last_checked_at = utc_now()
 
+    async def find_media(self, source_id: str, external_id: str) -> MediaItem | None:
+        async with self.database.session() as session:
+            return await session.scalar(
+                select(MediaItem).where(
+                    MediaItem.source_id == source_id,
+                    MediaItem.external_id == external_id,
+                )
+            )
+
     async def register(
         self,
         source_id: str,
@@ -455,9 +464,26 @@ class MediaService:
         info: MediaFileInfo,
         *,
         thumbnail_path: Path | None = None,
+        replace_media_id: str | None = None,
     ) -> MediaItem:
-        media_id = new_id("media")
+        media_id = replace_media_id or new_id("media")
+        if replace_media_id is not None:
+            existing, existing_assets = await self.get_media(replace_media_id)
+            if (
+                existing.source_id != source_id
+                or existing.external_id != probe.external_id
+            ):
+                raise ValueError("重新采集的媒体标识与原记录不一致")
+            if not any(
+                asset.kind == MediaAssetKind.VIDEO.value
+                and (asset.mime_type or "").startswith("image/")
+                for asset in existing_assets
+            ):
+                raise ValueError("仅允许替换误识别为视频的图片资产")
         target_dir = (self.storage_root / "media" / media_id / "source").resolve()
+        if replace_media_id is not None:
+            # Keep every original file, including metadata and thumbnails.
+            target_dir = target_dir / new_id("reacquired")
         if self.storage_root not in target_dir.parents:
             raise ValueError("媒体目标路径越界")
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -512,9 +538,37 @@ class MediaService:
                 )
             )
         async with self.database.session() as session, session.begin():
-            session.add(media)
+            if replace_media_id is None:
+                session.add(media)
+            else:
+                media = await session.merge(media)
             await session.flush()
-            session.add_all(assets)
+            for asset in assets:
+                previous = (
+                    await session.scalar(
+                        select(MediaAsset).where(
+                            MediaAsset.media_id == media_id,
+                            MediaAsset.kind == asset.kind,
+                        )
+                    )
+                    if replace_media_id is not None
+                    else None
+                )
+                if previous is None:
+                    session.add(asset)
+                else:
+                    for field in (
+                        "relative_path",
+                        "mime_type",
+                        "container",
+                        "codec",
+                        "size_bytes",
+                        "duration_seconds",
+                        "sha256",
+                        "status",
+                        "metadata_json",
+                    ):
+                        setattr(previous, field, getattr(asset, field))
             job = await session.scalar(
                 select(Job)
                 .where(

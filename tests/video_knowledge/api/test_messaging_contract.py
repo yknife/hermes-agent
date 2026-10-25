@@ -109,7 +109,42 @@ def test_collect_contract_canonicalizes_douyin_modal_video_url():
 @pytest.mark.parametrize(
     "url",
     [
+        "https://www.youtube.com/watch?v=06rHoEpiuYY",
+        "http://youtube.com/watch?v=06rHoEpiuYY&list=PLexample&index=2",
+        "https://m.youtube.com/watch?feature=shared&v=06rHoEpiuYY&t=15",
+        "https://youtu.be/06rHoEpiuYY?si=share-token",
+        "https://www.youtube.com/shorts/06rHoEpiuYY/",
+        "https://www.youtube.com/live/06rHoEpiuYY?si=share-token",
+        "https://www.youtube.com/embed/06rHoEpiuYY",
+    ],
+)
+def test_youtube_aliases_collect_one_canonical_video(url):
+    expected = "https://www.youtube.com/watch?v=06rHoEpiuYY"
+    assert CollectVideoArguments(url=url).url == expected
+    assert fast_collect_url(f"采集并分析这个视频：{url}") == expected
+    assert fast_collect_url(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
         "file:///C:/secret.txt",
+        "https://youtube.com.evil.test/watch?v=06rHoEpiuYY",
+        "https://www.youtube.com@evil.test/watch?v=06rHoEpiuYY",
+        "https://user:secret@www.youtube.com/watch?v=06rHoEpiuYY",
+        "https://www.youtube.com:8443/watch?v=06rHoEpiuYY",
+        "https://youtu.be.evil.test/06rHoEpiuYY",
+        "https://www.youtube.com/playlist?list=PLexample",
+        "https://www.youtube.com/@channel",
+        "https://www.youtube.com/@channel/live",
+        "https://www.youtube.com/redirect?q=https://127.0.0.1",
+        "https://www.youtube.com/watch?v=06rHoEpiuYY&v=abcdefghijk",
+        "https://www.youtube.com/watch?v=06rHoEpiuYY&v=",
+        "https://www.youtube.com/watch?v=short",
+        "https://www.youtube.com/watch",
+        "https://youtu.be/06rHoEpiuYY/extra",
+        "https://www.youtube.com/shorts/not-a-valid-id",
+        "https://www.youtube.com/watch?v=06rHoEpiuY%2F",
         "https://127.0.0.1/video/BV1GJ411x7h7",
         "https://bilibili.com.evil.test/video/BV1GJ411x7h7",
         "https://evilbilibili.com/video/BV1GJ411x7h7",

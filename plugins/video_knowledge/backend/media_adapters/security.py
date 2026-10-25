@@ -7,8 +7,10 @@ import ipaddress
 import socket
 from collections.abc import Callable, Sequence
 from urllib.parse import urljoin, urlsplit
+from urllib.request import getproxies
 
 import httpx
+from yt_dlp.utils.networking import HTTPHeaderDict, clean_proxies, select_proxy
 
 from plugins.video_knowledge.backend.app.domain.messaging_url import (
     is_messaging_short_url,
@@ -43,25 +45,46 @@ class MessagingUrlGuard:
         transport: httpx.AsyncBaseTransport | None = None,
         max_redirects: int = 5,
         timeout_seconds: float = 10.0,
+        proxy: str | None = None,
     ) -> None:
         self.resolver = resolver or _system_addresses
         self.transport = transport
         self.max_redirects = max(1, max_redirects)
         self.timeout_seconds = timeout_seconds
+        # Match yt-dlp's configured, environment and Windows system proxy policy.
+        # Snapshot it so admission and execution can use the same explicit route.
+        self._proxies = {"all": proxy or None} if proxy is not None else getproxies()
+        if "http" in self._proxies and "https" not in self._proxies:
+            self._proxies["https"] = self._proxies["http"]
+        clean_proxies(self._proxies, HTTPHeaderDict())
+
+    def proxy_for_url(self, value: str) -> str:
+        """Return the selected proxy, or an explicit empty string for direct I/O."""
+        return select_proxy(value, self._proxies) or ""
+
+    async def _validate_page_dns(self, value: str) -> None:
+        # Only fixed platform page URLs may delegate DNS to a trusted proxy.
+        # Arbitrary live-stream targets still go through the full DNS guard.
+        self._validate_shape(value)
+        proxy = self.proxy_for_url(value)
+        if proxy and urlsplit(proxy).scheme in {"http", "https", "socks5h"}:
+            return
+        await self._validate_dns(value)
 
     async def validate_input(self, value: str) -> str:
         current = self._validate_shape(value)
         expected_platform = messaging_video_platform(current)
-        await self._validate_dns(current)
+        await self._validate_page_dns(current)
         if not is_messaging_short_url(current):
             return current
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            trust_env=False,
-            timeout=httpx.Timeout(self.timeout_seconds),
-            transport=self.transport,
-        ) as client:
-            for _hop in range(self.max_redirects):
+        for _hop in range(self.max_redirects):
+            async with httpx.AsyncClient(
+                follow_redirects=False,
+                trust_env=False,
+                timeout=httpx.Timeout(self.timeout_seconds),
+                transport=self.transport,
+                proxy=self.proxy_for_url(current) or None,
+            ) as client:
                 try:
                     response = await client.head(current)
                     retry_with_get = response.status_code in {200, 405} or (
@@ -82,7 +105,7 @@ class MessagingUrlGuard:
                                     urljoin(current, location),
                                     expected_platform=expected_platform,
                                 )
-                                await self._validate_dns(current)
+                                await self._validate_page_dns(current)
                                 if not is_messaging_short_url(current):
                                     return current
                                 continue
@@ -96,7 +119,7 @@ class MessagingUrlGuard:
                         urljoin(current, location),
                         expected_platform=expected_platform,
                     )
-                    await self._validate_dns(current)
+                    await self._validate_page_dns(current)
                     if not is_messaging_short_url(current):
                         return current
                     continue
@@ -116,7 +139,8 @@ class MessagingUrlGuard:
     async def validate_probe(self, probe: MediaProbe, *, expected_platform: str) -> str:
         platform = str(probe.platform or "").casefold()
         platform_matches = (
-            (expected_platform == "bilibili" and "bili" in platform)
+            (expected_platform == "youtube" and platform == "youtube")
+            or (expected_platform == "bilibili" and "bili" in platform)
             or (expected_platform == "douyin" and "douyin" in platform)
             or (expected_platform == "weibo" and "weibo" in platform)
             or (
@@ -131,7 +155,7 @@ class MessagingUrlGuard:
         )
         if is_messaging_short_url(resolved):
             raise UnsafeUrlError("媒体探测结果仍是未解析短链")
-        await self._validate_dns(resolved)
+        await self._validate_page_dns(resolved)
         return resolved
 
     async def validate_live_stream(self, value: str) -> None:

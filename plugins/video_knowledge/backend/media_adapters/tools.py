@@ -258,6 +258,11 @@ def _raise_for_failure(stderr: str) -> None:
         raise MediaUnavailableError(
             "该视频目前不可用，可能已删除、设为私密或受地区限制"
         )
+    if "not a bot" in value:
+        raise AuthenticationRequiredError(
+            "YouTube 要求人机验证；已配置 Cookies 也可能被拒绝。"
+            "请在浏览器中使用同一代理出口完成验证后重新导出 Cookies，并检查代理出口。"
+        )
     if any(
         term in value
         for term in (
@@ -311,7 +316,7 @@ class YtDlpAdapter:
         args: list[str] = []
         if cookies_file is not None:
             args.extend(("--cookies", str(cookies_file)))
-        if proxy:
+        if proxy is not None:
             args.extend(("--proxy", proxy))
         return args
 
@@ -502,8 +507,12 @@ class YtDlpAdapter:
                     )
 
         template = str((target_dir / "source.%(ext)s").resolve())
+        # Weibo can expose scrubber JPGs as formats with unknown codecs.
+        # Exclude them from every branch, including the unrestricted fallback.
+        video_filter = "[ext!~='(?i)^(jpg|jpeg|png|webp|gif|bmp|avif|jxl|mhtml)$']"
         selector = (
-            f"bestvideo[height<={max_height}]+bestaudio/best[height<={max_height}]/best"
+            f"bestvideo[height<={max_height}]{video_filter}+bestaudio/"
+            f"best[height<={max_height}]{video_filter}/best{video_filter}"
         )
         args = [
             *self.command,
@@ -786,6 +795,16 @@ class FFprobeAdapter:
             for stream in streams
             if stream.get("codec_type") in {"video", "audio"}
         ]
+        container = str(data.get("format", {}).get("format_name") or "")
+        if container == "image2" or container in {
+            "jpeg_pipe",
+            "png_pipe",
+            "webp_pipe",
+            "bmp_pipe",
+            "gif",
+            "avif",
+        }:
+            raise InvalidMediaError("下载结果是图片，不是可转写的视频，请重新采集")
         if duration <= 0 or not av_streams:
             raise InvalidMediaError("媒体不包含可播放的音视频流")
         primary = next(

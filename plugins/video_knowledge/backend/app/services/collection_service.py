@@ -76,7 +76,7 @@ class CollectionService:
         self.database = database
         self.settings = settings
         self.jobs = JobStateMachine(database)
-        self.url_guard = url_guard or MessagingUrlGuard()
+        self.url_guard = url_guard or MessagingUrlGuard(proxy=settings.download_proxy)
 
     @staticmethod
     def _inbound_key(origin: CollectionOrigin) -> str:
@@ -616,6 +616,11 @@ class CollectionService:
         current["cookies_refreshed"] = (
             bool(cookies_file) if refresh_cookie_config else None
         )
+        current["diagnostic_note"] = (
+            "Cookies 配置状态不代表失败原因。必须以 previous_error_code 和失败阶段为准；"
+            "INVALID_MEDIA 表示媒体校验或处理失败，不能推断为缺少 Cookies。"
+            "只有 AUTH_REQUIRED 才提示检查登录凭据，且配置 Cookies 不保证解决认证问题。"
+        )
         if requested:
             platform_label = {
                 "bilibili": "B站",
@@ -627,7 +632,11 @@ class CollectionService:
                 (
                     "已刷新本次任务的 Cookies 配置"
                     if cookies_file
-                    else "本次任务没有可用的 Cookies 配置"
+                    else (
+                        "上次失败需要认证，尚未配置可用 Cookies，请检查登录凭据"
+                        if previous_error_code == "AUTH_REQUIRED"
+                        else "将按当前配置重试"
+                    )
                 )
                 if refresh_cookie_config
                 else "将复用已采集媒体重新分析"

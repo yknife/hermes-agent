@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 from plugins.video_knowledge.backend.app.domain.enums import JobStatus, JobType
 from plugins.video_knowledge.backend.app.infrastructure.db.base import Base, Job
 from plugins.video_knowledge.backend.app.infrastructure.db.session import Database
@@ -14,6 +15,33 @@ def test_worker_uses_configured_poll_interval() -> None:
         Database("sqlite+aiosqlite:///:memory:"), poll_interval_seconds=0.25
     )
     assert runner.poll_interval_seconds == 0.25
+
+
+@pytest.mark.asyncio
+async def test_database_failure_hides_sql_parameters(tmp_path: Path, caplog) -> None:
+    database = Database(f"sqlite+aiosqlite:///{tmp_path / 'failure.db'}")
+    async with database.engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    pending = await JobStateMachine(database).create(job_type=JobType.DEMO)
+    runner = WorkerRunner(database, worker_id="test-worker")
+
+    async def fail(*args):
+        raise IntegrityError(
+            "INSERT secret_sql", {"url": "secret_signed_url"}, Exception("conflict")
+        )
+
+    runner.demo_pipeline.run = fail
+    try:
+        assert await runner.run_once()
+        async with database.session() as session:
+            job = await session.get(Job, pending.id)
+            assert job.status == JobStatus.FAILED.value
+            assert job.error_code == "DATABASE_ERROR"
+            assert "secret" not in job.error_message
+        assert "secret" not in caplog.text
+    finally:
+        await runner.hermes_client.close()
+        await database.dispose()
 
 
 @pytest.mark.asyncio
