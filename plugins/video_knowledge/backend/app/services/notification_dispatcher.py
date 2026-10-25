@@ -225,11 +225,15 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
 
     if terminal_status in {"SUCCEEDED", "PARTIAL"} and media is not None:
         conclusion = _text(digest or summary.get("summary"))
-        if view.source_platform == "weibo":
-            # Count escaping and the ellipsis too; never split a markdown escape.
-            limit = WEIBO_NOTIFICATION_LIMIT
-            while len(conclusion) > WEIBO_NOTIFICATION_LIMIT:
-                conclusion = _text(
+        maximum = WEIBO_NOTIFICATION_LIMIT if view.source_platform == "weibo" else 600
+        # Apply the same bound to old records and failed digest generation.
+        # Count Markdown escaping as well; mark excerpts instead of presenting
+        # a clipped paragraph as a complete global conclusion.
+        if len(conclusion) > maximum:
+            label = "摘要节选："
+            limit = maximum - len(label)
+            while len(conclusion) > maximum:
+                conclusion = label + _text(
                     readable_excerpt(digest or summary.get("summary"), limit=limit)
                 )
                 limit -= 1
@@ -245,8 +249,7 @@ def render_notification(view: _NotificationView) -> list[NotificationPart]:
                 f"**作者：** {_text(media.author, 100)}",
                 f"**时长：** {_duration(media.duration_seconds)}",
                 "**结论：**",
-                # A digest is optional. Preserve the complete fallback; packing
-                # below handles message limits without discarding the ending.
+                # Complete analysis remains in the knowledge documents.
                 conclusion,
             ])
         ]

@@ -133,6 +133,8 @@ class InvalidReduceClient(FakeHermesClient):
 
 
 class BoundaryDroppingReduceClient(FakeHermesClient):
+    summary = "valid but incomplete"
+
     async def generate_json(self, **kwargs: object) -> dict[str, object]:
         self.calls += 1
         citation = {
@@ -141,7 +143,7 @@ class BoundaryDroppingReduceClient(FakeHermesClient):
             "end_ms": 1000,
         }
         return {
-            "summary": "valid but incomplete",
+            "summary": self.summary,
             "chapters": [
                 {"title": "first only", "summary": "first", "citation": citation}
             ],
@@ -567,7 +569,12 @@ async def test_reduce_bounds_input_and_falls_back_to_valid_map_results() -> None
 
 
 @pytest.mark.asyncio
-async def test_reduce_rejects_valid_result_that_drops_the_final_map_chunk() -> None:
+@pytest.mark.parametrize(
+    "global_summary", ["valid but incomplete", "综合开头、中段与结尾的完整结论。"]
+)
+async def test_reduce_rejects_valid_result_that_drops_the_final_map_chunk(
+    global_summary,
+) -> None:
     mapped: list[AnalysisBundle] = []
     for index in range(3):
         citation = {
@@ -590,11 +597,16 @@ async def test_reduce_rejects_valid_result_that_drops_the_final_map_chunk() -> N
             })
         )
     client = BoundaryDroppingReduceClient()
+    client.summary = global_summary
     service = KnowledgeService(None, client)  # type: ignore[arg-type]
 
     result = await service._reduce(mapped)
 
     assert client.calls == 1
+    if global_summary.endswith("。"):
+        assert result.summary == global_summary
+    else:
+        assert "summary 2" in result.summary
     assert [item.citation.segment_ids for item in result.chapters] == [
         ["segment_0"],
         ["segment_1"],
@@ -903,10 +915,32 @@ async def test_notification_digest_retries_dangling_model_outline(tmp_path):
 
         client = DigestClient([broken, broken])
         service = KnowledgeService(database, client, structured_attempts=2)
-        assert await service._generate_notification_summary(bundle) is None
+        assert await service._generate_notification_summary(bundle) == "完整结论。"
         assert client.calls == 2
     finally:
         await database.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second", ["压缩后的核心结论。", "长" * 662 + "。"])
+async def test_digest_length_feedback_and_short_summary_fallback(second, caplog):
+    class Client:
+        def __init__(self):
+            self.prompts = []
+
+        async def generate_json(self, **kwargs):
+            self.prompts.append(kwargs["user_prompt"])
+            return {"summary": "长" * 688 + "。" if len(self.prompts) == 1 else second}
+
+    client = Client()
+    service = KnowledgeService(None, client, structured_attempts=2)
+    bundle = AnalysisBundle(
+        summary="已有的全片结论。", chapters=[], knowledge_points=[], suggested_qa=[]
+    )
+    digest = await service._generate_notification_summary(bundle)
+    assert digest == (second if len(second) <= 600 else bundle.summary)
+    assert "689" in client.prompts[1] and "上限为 600" in client.prompts[1]
+    assert "reason=over_limit length=689 limit=600" in caplog.text
 
 
 @pytest.mark.asyncio

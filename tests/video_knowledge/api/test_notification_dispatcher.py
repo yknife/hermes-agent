@@ -449,8 +449,9 @@ async def test_renderer_ignores_persisted_dangling_digest(tmp_path):
             part.content
             for part in render_notification(await dispatcher._load_view(item_id))
         )
-        assert "完整句子。" * 250 in rendered
-        assert "…" not in rendered
+        assert "完整句子。" * 250 not in rendered
+        assert "摘要节选：" in rendered
+        assert "…" in rendered
         assert "【知识点概览】" not in rendered
     finally:
         await database.dispose()
@@ -458,11 +459,14 @@ async def test_renderer_ignores_persisted_dangling_digest(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("repeat", [250, 2500])
-async def test_renderer_preserves_entire_summary_without_digest(tmp_path, repeat):
+@pytest.mark.parametrize("text", ["中段内容。", "*强调内容*。"])
+async def test_renderer_bounds_summary_without_digest_and_preserves_document(
+    tmp_path, repeat, text
+):
     database = await _database(tmp_path)
     try:
         item_id = await _seed(database)
-        summary = "开头内容。" + "中段内容。" * repeat + "结尾建议必须保留。"
+        summary = "开头内容。" + text * repeat + "结尾建议必须保留。"
         async with database.session() as session, session.begin():
             document = await session.get(KnowledgeDocument, "knowledge-summary")
             document.content_json = json.dumps(
@@ -476,10 +480,14 @@ async def test_renderer_preserves_entire_summary_without_digest(tmp_path, repeat
             part for part in parts if ":conclusion:" in part.idempotency_key
         ]
         bodies = [part.content.rsplit("\n\n通知 ", 1)[0] for part in reading_parts]
-        # Ignore packing whitespace but verify every character, including the end.
-        assert summary in "".join("".join(bodies).split())
-        assert summary == "".join(part.content for part in sharing_parts)
-        assert len(reading_parts) == len(sharing_parts) == (1 if repeat == 250 else 3)
+        conclusion = "".join(part.content for part in sharing_parts)
+        assert len(conclusion) <= 600
+        assert conclusion.startswith("摘要节选：") and conclusion.endswith("…")
+        assert conclusion in "".join(bodies)
+        assert len(reading_parts) == len(sharing_parts) == 1
+        async with database.session() as session:
+            document = await session.get(KnowledgeDocument, "knowledge-summary")
+            assert json.loads(document.content_json)["summary"] == summary
         for index, part in enumerate(parts, 1):
             assert len(part.content.rsplit("\n\n通知 ", 1)[0]) <= 6000
             assert part.number == index

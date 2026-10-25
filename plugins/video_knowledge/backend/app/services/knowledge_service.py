@@ -448,6 +448,12 @@ class KnowledgeService:
                 and self._covers_map_boundaries(bundle, mapped)
                 else compact
             )
+            # Citation coverage controls the detailed evidence, not whether a
+            # separately valid global summary must be discarded with it.
+            if result is compact:
+                summary = valid_notification_digest(bundle.summary)
+                if summary is not None:
+                    result.summary = summary
             result.degraded_ranges = compact.degraded_ranges
             return result
         except HermesInvalidResponseError:
@@ -477,7 +483,7 @@ class KnowledgeService:
             + (
                 f"用于新浪微博分享，总长度不得超过 {limit} 个字符（含标点、空格和英文）。"
                 if limit == WEIBO_NOTIFICATION_LIMIT
-                else "控制在 300 至 600 个汉字。"
+                else f"建议 300 至 450 个字符，总长度不得超过 {limit} 个字符（含标点、空格和英文）。"
             )
             + "以完整的中文句号、问号或感叹号结束。"
             "只返回 JSON 对象。\n\n"
@@ -495,11 +501,12 @@ class KnowledgeService:
                 "summary": {"type": "string", "minLength": 1, "maxLength": limit}
             },
         }
+        feedback = ""
         for attempt in range(1, self.structured_attempts + 1):
             try:
                 payload = await self.client.generate_json(
                     system_prompt=NOTIFICATION_SUMMARY_SYSTEM_PROMPT,
-                    user_prompt=prompt,
+                    user_prompt=feedback + prompt,
                     schema_name="video_knowledge_notification_summary",
                     schema=schema,
                     **selection,
@@ -508,9 +515,19 @@ class KnowledgeService:
                 digest = valid_notification_digest(value, limit=limit)
                 if digest is not None:
                     return digest
+                length = len(" ".join(value.split())) if isinstance(value, str) else 0
+                reason = "over_limit" if length > limit else "invalid_format"
+                feedback = (
+                    f"上次摘要校验失败：长度为 {length} 个字符，上限为 {limit}。"
+                    "请重新压缩为一个完整自然段，只保留核心结论与关键建议；"
+                    "不要编号或标题，以中文句末标点结束。\n\n"
+                )
                 logger.warning(
-                    "Hermes notification summary rejected incomplete digest "
+                    "Hermes notification summary rejected reason=%s length=%d limit=%d "
                     "attempt=%d/%d",
+                    reason,
+                    length,
+                    limit,
                     attempt,
                     self.structured_attempts,
                 )
@@ -523,7 +540,7 @@ class KnowledgeService:
                 )
                 if not exc.retryable:
                     break
-        return None
+        return valid_notification_digest(bundle.summary, limit=limit)
 
     @classmethod
     def _compact_mapped_bundles(
